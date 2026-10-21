@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SciMetro Studio</title>
+<style>
+:root{--bg:#fff;--fg:#1a1a1a;--mut:#666;--card:#f5f5f2;--bd:#d8d8d4;--ac:#0b5fff;--ok:#1a8a4a;--er:#c62828}
+@media(prefers-color-scheme:dark){:root{--bg:#151515;--fg:#eee;--mut:#9a9a9a;--card:#211f1f;--bd:#3a3a3a;--ac:#6ea2ff;--ok:#5cc98a;--er:#ff7b7b}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:15px/1.5 system-ui,sans-serif}
+main{max-width:920px;margin:0 auto;padding:20px 16px 60px}
+h1{font-size:22px;margin:0 0 4px}h2{font-size:16px;margin:0 0 8px}p.s{color:var(--mut);margin:0 0 16px}
+section,details{background:var(--card);border:1px solid var(--bd);border-radius:10px;padding:14px;margin:12px 0}
+summary{cursor:pointer;font-weight:600}
+label{display:block;font-size:12px;color:var(--mut);margin:8px 0 2px}
+input,select,textarea,button{font:inherit;color:var(--fg);background:var(--bg);border:1px solid var(--bd);border-radius:6px;padding:6px 9px;width:100%}
+button{width:auto;cursor:pointer;background:var(--ac);color:#fff;border:0}button:disabled{opacity:.5}
+button.g{background:var(--bg);color:var(--fg);border:1px solid var(--bd)}
+.row{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:8px}
+.hit{padding:6px 8px;border:1px solid var(--bd);border-radius:6px;margin:4px 0;cursor:pointer}.hit:hover{border-color:var(--ac)}
+.badge{float:right;font-size:12px;color:var(--mut)}.badge.ok{color:var(--ok)}.badge.er{color:var(--er)}
+#log{font:12px/1.4 ui-monospace,monospace;white-space:pre-wrap;max-height:200px;overflow:auto;background:var(--bg);border:1px solid var(--bd);border-radius:6px;padding:8px}
+.tw{overflow-x:auto}table{border-collapse:collapse;font-size:13px;width:100%}td,th{border-bottom:1px solid var(--bd);padding:3px 8px;text-align:left}
+pre{white-space:pre-wrap;background:var(--bg);border:1px solid var(--bd);border-radius:6px;padding:10px;max-height:420px;overflow:auto;font-size:13px}
+.bar{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}
+</style></head><body><main>
+<h1>SciMetro Studio</h1>
+<p class="s">Generate scientometric studies from the dblp SPARQL endpoint (computer-science literature, with OpenCitations links), starting from a Wikidata concept. Local LLM via Ollama; results stored in GitHub.</p>
+
+<p class="s"><a href="studies/" style="color:var(--ac)">Browse stored studies</a></p>
+<details><summary>Settings</summary>
+<div class="row">
+<div><label>Ollama URL</label><input id="ol" value="http://localhost:11434"></div>
+<div><label>Ollama model</label><input id="md" value="llama3.1:8b"></div>
+<div><label>Max search results from dblp</label><input id="mx" type="number" value="300"></div>
+<div><label>LLM relevance threshold (0–10)</label><input id="th" type="number" value="5"></div>
+<div><label>Wikidata languages</label><input id="lg" value="en,fr,ar,es,de"></div>
+<div><label>GitHub repo (owner/name)</label><input id="rp" placeholder="user/studies"></div>
+<div><label>Folder in repo</label><input id="pt" value="studies"></div>
+<div><label>GitHub token (session only)</label><input id="tk" type="password" placeholder="fine-grained, contents:write"></div>
+</div>
+<p class="s">Ollama must allow this origin: <code>OLLAMA_ORIGINS="https://USER.github.io" ollama serve</code></p>
+</details>
+
+<section><h2>1. Choose a Wikidata item</h2>
+<input id="q" placeholder="Type a term (e.g. malaria) or a Q-id (e.g. Q12156), then press Enter">
+<div id="hits"></div><div id="sel" class="s"></div></section>
+
+<section><h2>Pipeline <button class="g" id="all" style="float:right">Run all</button></h2><div id="steps"></div></section>
+
+<section><h2>Search query <span class="s">(editable: one AND-group per line; terms inside a line separated by <code>|</code> mean OR; matched against dblp titles)</span></h2><textarea id="qry" rows="3"></textarea></section>
+
+<section><h2>Log</h2><div id="log"></div></section>
+
+<section id="out" hidden><h2>Generated paper</h2><div id="stat" class="tw"></div><pre id="paper"></pre>
+<div class="bar"><button id="dl">Download .md</button><button id="dj" class="g">Download data.json</button><button id="gh" class="g">Store in GitHub</button></div></section>
+</main>
+<script>
+const $=s=>document.querySelector(s),S={sel:null,terms:[],recs:[],stats:null,prev:[],paper:''};
+const IDS=['ol','md','mx','th','lg','rp','pt'];
+try{const o=JSON.parse(localStorage.getItem('sms')||'{}');IDS.forEach(i=>{if(o[i]!=null)$('#'+i).value=o[i]})}catch(e){}
+const save=()=>{try{localStorage.setItem('sms',JSON.stringify(Object.fromEntries(IDS.map(i=>[i,$('#'+i).value]))))}catch(e){}};
+IDS.forEach(i=>$('#'+i).addEventListener('change',save));
+const C=()=>({ol:$('#ol').value.replace(/\/$/,''),md:$('#md').value,db:'DBLP',mx:+$('#mx').value||300,th:+$('#th').value,lg:$('#lg').value.split(',').map(s=>s.trim()).filter(Boolean)});
+const log=m=>{const l=$('#log');l.textContent+=m+'\n';l.scrollTop=l.scrollHeight};
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+const J=async(u,o)=>{const r=await fetch(u,o);if(!r.ok){throw new Error(r.status+' '+u.slice(0,90))}return r.json()};
+const E=encodeURIComponent;
+const chunk=(a,n)=>{const r=[];for(let i=0;i<a.length;i+=n)r.push(a.slice(i,i+n));return r};
+const topN=(a,n)=>{const m=new Map();a.forEach(x=>x&&m.set(x,(m.get(x)||0)+1));return[...m].sort((x,y)=>y[1]-x[1]).slice(0,n)};
+
+async function llm(prompt,json){
+ const c=C();
+ let r;try{r=await J(c.ol+'/api/generate',{method:'POST',body:JSON.stringify({model:c.md,prompt,stream:false,format:json?'json':undefined,options:{temperature:.2,num_ctx:8192}})})}catch(e){throw new Error(`Cannot reach Ollama at ${c.ol} (${e.message}). Is it running, is the model "${c.md}" pulled, and was it started with OLLAMA_ORIGINS="${location.origin}"?`)}
+ return r.response.trim();
+}
+
+/* ---------- 1. Wikidata search (Elasticsearch-backed wbsearchentities) ---------- */
+let tm,seq=0;
+const pick=h=>{S.sel=h;S.terms=[];$('#sel').textContent='Selected: '+h.label+' ('+h.id+')';$('#hits').innerHTML='';log('Selected '+h.id+' '+h.label)};
+const msg=t=>{$('#hits').innerHTML='';const d=document.createElement('div');d.className='s';d.textContent=t;$('#hits').append(d)};
+async function wdSearch(v){
+ const me=++seq;
+ if(/^Q\d+$/i.test(v)){const id=v.toUpperCase();try{const r=await J(`https://www.wikidata.org/w/api.php?action=wbgetentities&ids=${id}&props=labels&languages=en&format=json&origin=*`);const l=r.entities[id]?.labels?.en?.value;if(!l)return msg('No item '+id);return pick({id,label:l})}catch(err){return msg('Wikidata unreachable: '+err.message)}}
+ msg('Searching…');
+ const lang=(C().lg[0]||'en');
+ try{
+  const r=await J(`https://www.wikidata.org/w/api.php?action=wbsearchentities&search=${E(v)}&language=${lang}&uselang=${lang}&type=item&limit=10&format=json&origin=*`);
+  if(me!==seq)return;
+  if(!r.search||!r.search.length)return msg('No results. Try another spelling, or type a Q-id such as Q21198.');
+  $('#hits').innerHTML='';
+  r.search.forEach(h=>{const d=document.createElement('div');d.className='hit';d.textContent=`${h.label||h.id} (${h.id}) — ${h.description||''}`;d.onclick=()=>pick({id:h.id,label:h.label||h.id});$('#hits').append(d)});
+ }catch(err){msg('Search failed: '+err.message+'. If this page runs inside a preview or sandbox, open it from GitHub Pages or a local server instead.')}
+}
+$('#q').addEventListener('input',e=>{clearTimeout(tm);const v=e.target.value.trim();if(v.length<2){$('#hits').innerHTML='';return}tm=setTimeout(()=>wdSearch(v),300)});
+$('#q').addEventListener('keydown',e=>{if(e.key==='Enter'){clearTimeout(tm);const v=e.target.value.trim();if(v)wdSearch(v)}});
+
+/* ---------- pipeline steps ---------- */
+const WD='https://www.wikidata.org/w/api.php?action=wbgetentities&format=json&origin=*';
+const REL=['P279','P31','P361','P527','P1269','P2579','P1552','P460'];
+async function terms(){
+ if(!S.sel)throw new Error('choose a Wikidata item first');const c=C(),L=c.lg.join('|'),id=S.sel.id;
+ const r=await J(`${WD}&ids=${id}&props=labels|aliases|claims&languages=${L}`),e=r.entities[id],rel=new Map();
+ (e.claims?.P527||[]).forEach(x=>{const v=x.mainsnak?.datavalue?.value?.id;if(v&&!rel.has(v))rel.set(v,'has part')});
+ for(const [p,name] of [['P279','subclass of'],['P31','instance of'],['P1269','facet of'],['P361','part of']]){
+  try{const q=await J(`https://www.wikidata.org/w/api.php?action=query&list=search&srsearch=${E('haswbstatement:'+p+'='+id)}&srnamespace=0&srlimit=30&format=json&origin=*`);
+   (q.query.search||[]).forEach(x=>{if(x.title!==id&&!rel.has(x.title))rel.set(x.title,name)})}catch(err){log(`Wikidata ${name} lookup failed: ${err.message}`)}
+ }
+ const pack=(i,x,r)=>({id:i,rel:r,labels:Object.fromEntries(Object.entries(x.labels||{}).map(([k,v])=>[k,v.value])),aliases:Object.fromEntries(Object.entries(x.aliases||{}).map(([k,v])=>[k,v.map(a=>a.value)]))});
+ S.terms=[pack(id,e,'main')];
+ const ids=[...rel.keys()].slice(0,120);
+ for(const b of chunk(ids,50)){const r2=await J(`${WD}&ids=${b.join('|')}&props=labels|aliases&languages=${L}`);b.forEach(i=>r2.entities[i]&&S.terms.push(pack(i,r2.entities[i],rel.get(i))))}
+ const n={};S.terms.slice(1).forEach(t=>n[t.rel]=(n[t.rel]||0)+1);
+ log(`Terms: main item + related ${JSON.stringify(n)}`);
+}
+const flat=t=>[...new Set([...Object.values(t.labels),...Object.values(t.aliases).flat()])];
+async function query(){
+ if(!S.terms.length)await terms();
+ const main=flat(S.terms[0]).slice(0,12),ascii=x=>/^[\x00-\x7F]+$/.test(x)&&x.length<=40&&x.split(' ').length<=4;
+ const rels={};S.terms.slice(1).forEach(t=>{(rels[t.rel]=rels[t.rel]||[]).push(...[t.labels.en,...(t.aliases.en||[]).slice(0,2)].filter(Boolean))});
+ Object.keys(rels).forEach(k=>rels[k]=[...new Set(rels[k])].slice(0,15));
+ let groups=[];
+ try{const o=JSON.parse(await llm(`Topic synonyms (multilingual): ${JSON.stringify(main)}\nRelated Wikidata items by relationship to the topic (subclasses, instances, facets, parts): ${JSON.stringify(rels)}\nBuild a title-keyword query for the dblp computer-science bibliography. Return JSON {"groups":[[...],[...]]}: 1 to 3 groups; a title must match at least one term in EVERY group (AND between groups, OR within a group). Group 1 holds the core concept: its English synonyms, singular and plural forms, plus the related items that are specific and characteristic search terms for the topic (skip generic or ambiguous ones). Terms are short lowercase English words or phrases (3 to 15 per group), no quotes, no operators. Add groups 2 and 3 only if the topic is so broad that one group would return unrelated papers.`,1));
+  groups=(o.groups||[]).map(g=>[].concat(g).map(x=>String(x).trim().toLowerCase()).filter(Boolean)).filter(g=>g.length).slice(0,3)}catch(e){log('LLM query failed, using fallback: '+e.message)}
+ if(!groups.length)groups=[[...new Set([...main,...Object.values(rels).flat()].filter(ascii).map(x=>x.toLowerCase()))].slice(0,14)];
+ $('#qry').value=groups.map(g=>g.join(' | ')).join('\n');log('Query groups:\n'+$('#qry').value);
+}
+const EP='https://sparql.dblp.org/sparql';
+const PFX='PREFIX dblp: <https://dblp.org/rdf/schema#>\nPREFIX cito: <http://purl.org/spar/cito/>\nPREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>\n';
+async function sp(q){
+ for(let i=0;i<3;i++){
+  try{const r=await fetch(EP,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded','Accept':'application/sparql-results+json'},body:'query='+E(PFX+q)});
+   if(!r.ok)throw new Error(r.status+' '+(await r.text()).slice(0,160));
+   const j=await r.json();await sleep(300);return j.results.bindings.map(b=>Object.fromEntries(Object.entries(b).map(([k,v])=>[k,v.value])))}
+  catch(e){if(i===2)throw new Error('dblp SPARQL: '+e.message+(/Failed to fetch/.test(e.message)?' (network, CORS or rate limit; wait a minute and retry)':''));await sleep(2000*(i+1))}}
+}
+const lit=x=>'"'+x.replace(/\\/g,'\\\\').replace(/"/g,'\\"').replace(/[\r\n]+/g,' ')+'"';
+const iri=u=>'<'+u.replace(/[<>"\s]/g,'')+'>';
+const parseQ=t=>t.split('\n').map(l=>l.split('|').map(x=>x.trim().toLowerCase()).filter(Boolean)).filter(g=>g.length);
+const filterOf=g=>g.map(a=>'('+a.map(t=>`CONTAINS(LCASE(STR(?title)),${lit(t)})`).join(' || ')+')').join(' && ');
+const pubQ=(vals,f)=>`SELECT ?p ?title ?year ?venue ?doi ?omid WHERE { ${vals?`VALUES ?p { ${vals} } `:''}?p a dblp:Publication ; dblp:title ?title ; dblp:yearOfPublication ?year . OPTIONAL{?p dblp:publishedIn ?venue} OPTIONAL{?p dblp:doi ?doi} OPTIONAL{?p dblp:omid ?omid} ${f?'FILTER('+f+')':''} }`;
+const nRec=(b,origin)=>({id:b.p,title:(b.title||'').replace(/\.$/,''),year:+b.year,venue:b.venue||'',doi:(b.doi||'').replace('https://doi.org/',''),omid:b.omid||'',cites:0,authors:[],origin});
+const dedupe=rows=>{const m=new Map();rows.forEach(b=>{if(!m.has(b.p))m.set(b.p,b)});return[...m.values()]};
+async function addAuthors(recs){
+ const by=new Map(recs.map(r=>[r.id,r]));
+ for(const b of chunk(recs,80)){
+  const rows=await sp(`SELECT ?p ?a ?name ?aff WHERE { VALUES ?p { ${b.map(r=>iri(r.id)).join(' ')} } ?p dblp:authoredBy ?a . OPTIONAL{?a dblp:primaryCreatorName ?n1} OPTIONAL{?a rdfs:label ?n2} BIND(COALESCE(?n1,?n2) AS ?name) OPTIONAL{?a dblp:primaryAffiliation ?aff} }`);
+  rows.forEach(x=>{const r=by.get(x.p);if(!r)return;let a=r.authors.find(z=>z.k===x.a);if(!a){a={k:x.a,name:x.name||x.a,aff:''};r.authors.push(a)}if(x.aff&&!a.aff)a.aff=x.aff})}
+}
+async function addCounts(recs){
+ const by=new Map(recs.filter(r=>r.omid).map(r=>[r.omid,r]));
+ for(const b of chunk([...by.values()],60)){
+  const V=b.map(r=>iri(r.omid)).join(' ');
+  (await sp(`SELECT ?o (COUNT(?c) AS ?n) WHERE { VALUES ?o { ${V} } ?c cito:hasCitedEntity ?o } GROUP BY ?o`)).forEach(x=>{const r=by.get(x.o);if(r)r.cites=+x.n});
+  (await sp(`SELECT ?o (COUNT(?c) AS ?n) WHERE { VALUES ?o { ${V} } ?c cito:hasCitingEntity ?o } GROUP BY ?o`)).forEach(x=>{const r=by.get(x.o);if(r)r.nrefs=+x.n})}
+}
+async function search(){
+ const c=C(),g=parseQ($('#qry').value);if(!g.length)throw new Error('empty query');
+ log('Querying dblp… (title scan, may take several seconds)');
+ const rows=dedupe(await sp(pubQ('',filterOf(g))+` LIMIT ${c.mx*2}`)).slice(0,c.mx);
+ S.recs=rows.map(b=>nRec(b,'search'));log(`dblp: ${S.recs.length} publications`);
+ await addAuthors(S.recs);await addCounts(S.recs);log('Authors and citation counts added');
+}
+async function snowball(){
+ const seeds=S.recs.filter(r=>r.omid).sort((a,b)=>b.cites-a.cites).slice(0,40);
+ if(!seeds.length){log('No OpenCitations links among results; snowballing skipped');return}
+ const known=new Set(S.recs.map(r=>r.id)),back=new Map(),fwd=new Map();
+ for(const b of chunk(seeds,20)){
+  const V=b.map(s=>iri(s.omid)).join(' ');
+  (await sp(`SELECT ?p (COUNT(DISTINCT ?o) AS ?k) WHERE { VALUES ?o { ${V} } ?c cito:hasCitingEntity ?o ; cito:hasCitedEntity ?r . ?p dblp:omid ?r } GROUP BY ?p`)).forEach(x=>back.set(x.p,(back.get(x.p)||0)+ +x.k));
+  (await sp(`SELECT ?p (COUNT(DISTINCT ?o) AS ?k) WHERE { VALUES ?o { ${V} } ?c cito:hasCitedEntity ?o ; cito:hasCitingEntity ?r . ?p dblp:omid ?r } GROUP BY ?p`)).forEach(x=>fwd.set(x.p,(fwd.get(x.p)||0)+ +x.k))}
+ const pickN=(m,min)=>[...m].filter(([p,k])=>k>=min&&!known.has(p)).sort((a,b)=>b[1]-a[1]).slice(0,150).map(x=>x[0]);
+ const refs=pickN(back,2),cits=pickN(fwd,1);
+ log(`Snowball candidates in dblp: ${refs.length} references (cited by ≥2 seeds), ${cits.length} citing works`);
+ const add=[];
+ for(const [ids,o] of [[refs,'reference'],[cits,'citing']])for(const b of chunk(ids,80)){
+  dedupe(await sp(pubQ(b.map(iri).join(' ')))).forEach(x=>{if(!known.has(x.p)){known.add(x.p);add.push(nRec(x,o))}})}
+ await addAuthors(add);await addCounts(add);S.recs.push(...add);log(`Snowballing added ${add.length} works`);
+}
+async function filt(){
+ const c=C(),topic=S.terms[0]?.labels.en||S.sel.label,keep=[];let drop=0;
+ for(const b of chunk(S.recs,20)){
+  const list=b.map((r,i)=>`${i+1}. ${r.title} (${r.year})`).join('\n');
+  try{const o=JSON.parse(await llm(`Topic: "${topic}". Search query: ${$('#qry').value.replace(/\n/g,' AND ')}\nRate each title's relevance to the topic from 0 (unrelated outlier) to 10 (core). Return JSON {"scores":[{"i":1,"s":7},...]} for all ${b.length} items.\n${list}`,1));
+   const m=new Map((o.scores||[]).map(x=>[x.i,x.s]));b.forEach((r,i)=>{const s=m.get(i+1);if(s==null||s>=c.th)keep.push(r);else drop++})}
+  catch(e){keep.push(...b);log('LLM filter skipped for a batch: '+e.message.slice(0,140))}
+  log(`LLM filter: kept ${keep.length}, dropped ${drop}`)}
+ S.recs=keep;
+}
+function metadata(){
+ const u=new Map();S.recs.forEach(r=>{if(!u.has(r.id))u.set(r.id,r)});S.recs=[...u.values()].filter(r=>r.title&&r.year);
+ const p=f=>Math.round(100*S.recs.filter(f).length/Math.max(1,S.recs.length));
+ log(`Metadata: ${S.recs.length} unique works; authors ${p(r=>r.authors.length)}%, DOI ${p(r=>r.doi)}%, OpenCitations id ${p(r=>r.omid)}%, cited ≥1 ${p(r=>r.cites>0)}%`);
+}
+const STOP=new Set('a an and are as at based by for from in into is it its of on or over the to towards toward using use via with within we our new approach study analysis system systems method methods'.split(' '));
+const words=t=>t.toLowerCase().replace(/[^\p{L}\p{N}\s-]/gu,' ').split(/\s+/).filter(w=>w.length>2&&!STOP.has(w));
+const CN='afghanistan,albania,algeria,argentina,armenia,australia,austria,azerbaijan,bangladesh,belarus,belgium,bolivia,bosnia and herzegovina,brazil,bulgaria,cambodia,canada,chile,china,colombia,costa rica,croatia,cuba,cyprus,czech republic,denmark,ecuador,egypt,estonia,ethiopia,finland,france,georgia,germany,ghana,greece,hong kong,hungary,iceland,india,indonesia,iran,iraq,ireland,israel,italy,japan,jordan,kazakhstan,kenya,kuwait,latvia,lebanon,lithuania,luxembourg,macau,malaysia,malta,mexico,morocco,nepal,netherlands,new zealand,nigeria,norway,oman,pakistan,palestine,panama,peru,philippines,poland,portugal,qatar,romania,russia,saudi arabia,serbia,singapore,slovakia,slovenia,south africa,south korea,spain,sri lanka,sweden,switzerland,syria,taiwan,thailand,tunisia,turkey,uganda,ukraine,united arab emirates,united kingdom,united states,uruguay,uzbekistan,venezuela,vietnam,yemen,zimbabwe'.split(',');
+const CA={usa:'united states',us:'united states','u.s.a.':'united states','u.s.':'united states',uk:'united kingdom',england:'united kingdom',scotland:'united kingdom',wales:'united kingdom','northern ireland':'united kingdom',korea:'south korea','republic of korea':'south korea','p.r. china':'china',prc:'china',"people's republic of china":'china','the netherlands':'netherlands','holland':'netherlands',czechia:'czech republic','türkiye':'turkey',turkiye:'turkey',uae:'united arab emirates','russian federation':'russia',vietnam:'vietnam','viet nam':'vietnam'};
+const CS=new Set(CN),title=x=>x.replace(/\b\w/g,m=>m.toUpperCase());
+const countryOf=aff=>{if(!aff)return'';const p=aff.split(',').map(x=>x.trim().toLowerCase().replace(/\.$/,'')).reverse();for(const x of p.slice(0,2)){const k=CA[x]||x;if(CS.has(k))return title(k)}return''};
+const instOf=aff=>aff?aff.split(',')[0].trim():'';
+const bin=n=>n===0?'0':n<5?'1–4':n<10?'5–9':n<25?'10–24':n<50?'25–49':n<100?'50–99':'100+';
+function stats(){
+ const R=S.recs,cy=new Date().getFullYear(),yrs=new Map();R.forEach(r=>yrs.set(r.year,(yrs.get(r.year)||0)+1));
+ const ys=[...yrs.keys()].sort((a,b)=>a-b),full=ys.filter(y=>y<cy),pts=full.map(y=>[y,Math.log(yrs.get(y))]);
+ let g=null;if(pts.length>2){const n=pts.length,sx=pts.reduce((a,p)=>a+p[0],0),sy=pts.reduce((a,p)=>a+p[1],0),sxy=pts.reduce((a,p)=>a+p[0]*p[1],0),sxx=pts.reduce((a,p)=>a+p[0]*p[0],0);g=+((Math.exp((n*sxy-sx*sy)/(n*sxx-sx*sx))-1)*100).toFixed(1)}
+ const cs=R.map(r=>r.cites).sort((a,b)=>b-a);let h=0;cs.forEach((c,i)=>{if(c>=i+1)h=i+1});
+ const au=new Map();R.forEach(r=>r.authors.forEach(a=>{const o=au.get(a.k)||{n:a.name,d:0};o.d++;au.set(a.k,o)}));
+ const ad=[...au.values()],lot=[1,2,3,4].map(k=>[k,ad.filter(a=>a.d===k).length]);lot.push(['5+',ad.filter(a=>a.d>=5).length]);
+ const tot=cs.reduce((a,b)=>a+b,0),w=R.filter(r=>r.authors.length);
+ S.stats={docs:R.length,span:[ys[0],ys.at(-1)],byYear:Object.fromEntries(ys.map(y=>[y,yrs.get(y)])),annualGrowthPct:g,totalCitations:tot,meanCitations:+(tot/R.length).toFixed(2),hIndex:h,authors:ad.length,docsPerAuthor:+(R.reduce((a,r)=>a+r.authors.length,0)/Math.max(1,ad.length)).toFixed(2),authorsPerDoc:+(R.reduce((a,r)=>a+r.authors.length,0)/Math.max(1,w.length)).toFixed(2),singleAuthorPct:+(100*w.filter(r=>r.authors.length===1).length/Math.max(1,w.length)).toFixed(1),lotka:lot,topAuthors:[...au.values()].sort((a,b)=>b.d-a.d).slice(0,10).map(a=>[a.n,a.d]),topSources:topN(R.map(r=>r.venue),10),topCountries:topN(R.flatMap(r=>[...new Set(r.authors.map(a=>countryOf(a.aff)).filter(Boolean))]),10),topInstitutions:topN(R.flatMap(r=>[...new Set(r.authors.map(a=>instOf(a.aff)).filter(Boolean))]),10),
+ coverage:{affiliationPct:Math.round(100*R.filter(r=>r.authors.some(a=>a.aff)).length/R.length),countryPct:Math.round(100*R.filter(r=>r.authors.some(a=>countryOf(a.aff))).length/R.length)},
+ intlCollabPct:(()=>{const w=R.map(r=>new Set(r.authors.map(a=>countryOf(a.aff)).filter(Boolean))).filter(x=>x.size);return w.length?+(100*w.filter(x=>x.size>1).length/w.length).toFixed(1):null})(),
+ citedPct:+(100*R.filter(r=>r.cites>0).length/R.length).toFixed(1),meanReferences:(()=>{const w=R.filter(r=>r.nrefs!=null);return w.length?+(w.reduce((a,r)=>a+r.nrefs,0)/w.length).toFixed(1):null})(),
+ citationBins:['0','1–4','5–9','10–24','25–49','50–99','100+'].map(b=>[b,R.filter(r=>bin(r.cites)===b).length]),
+ topKeywords:topN(R.flatMap(r=>[...new Set(words(r.title))]),15),topBigrams:topN(R.flatMap(r=>{const w=words(r.title);return[...new Set(w.slice(1).map((x,i)=>w[i]+' '+x))]}),10),topCited:R.slice().sort((a,b)=>b.cites-a.cites).slice(0,8).map(r=>[r.title,r.year,r.cites]),origins:Object.fromEntries(topN(R.map(r=>r.origin),5))};
+ renderStats();log('Statistics computed');
+}
+function renderStats(){
+ const s=S.stats,mx=Math.max(...Object.values(s.byYear)),ys=Object.keys(s.byYear),W=Math.max(300,ys.length*14);
+ const bars=ys.map((y,i)=>{const v=s.byYear[y],h=Math.round(80*v/mx);return`<rect x="${i*14}" y="${90-h}" width="11" height="${h}" fill="var(--ac)"><title>${y}: ${v}</title></rect>`}).join('');
+ $('#stat').innerHTML=`<svg viewBox="0 0 ${W} 100" style="width:100%;max-width:${W*2}px"><text x="0" y="98" font-size="8" fill="currentColor">${ys[0]}</text><text x="${W-22}" y="98" font-size="8" fill="currentColor">${ys.at(-1)}</text>${bars}</svg><p class="s">Works per year — ${s.docs} works, h-index ${s.hIndex}, growth ${s.annualGrowthPct??'n/a'}%/yr, ${s.authors} authors</p>`;
+ $('#out').hidden=false;
+}
+async function prior(){
+ if(!S.terms.length)await terms();
+ const main=[...new Set(flat(S.terms[0]).filter(x=>/^[\x00-\x7F]+$/.test(x)).map(x=>x.toLowerCase()))].slice(0,6);
+ const g=[main.length?main:[(S.sel.label||'').toLowerCase()],['bibliometric','scientometric','research productivity','research output','research trends','mapping study','publication trends','literature analysis']];
+ const m=dedupe(await sp(pubQ('',filterOf(g))+' LIMIT 150'));
+ const r=m.map(b=>nRec(b,'prior'));await addAuthors(r);await addCounts(r);
+ S.prev=r.sort((a,b)=>b.cites-a.cites).slice(0,10);log(`Previous studies found in dblp: ${S.prev.length}`);
+}
+const cite=p=>`${p.authors.slice(0,3).map(a=>a.name).join(', ')}${p.authors.length>3?' et al.':''} (${p.year}). ${p.title}. ${p.venue}${p.doi?'. https://doi.org/'+p.doi:''}`;
+async function write(){
+ const s=S.stats,c=C(),t=S.terms[0]?.labels.en||S.sel.label,q=$('#qry').value;
+ const compact={...s,topCited:s.topCited.slice(0,5)};
+ const prev=S.prev.map((p,i)=>`[${i+1}] ${p.authors.slice(0,2).map(a=>a.name).join(', ')} (${p.year}). ${p.title}`).join('\n')||'(none found)';
+ const G={Introduction:'Motivate the topic, define it, explain why a scientometric view of its research productivity is useful, and state 2–3 research questions.',
+ 'Related Works':'Synthesise the numbered previous studies: what they measured, their findings and their gaps. Cite them as [n]. If none were found, say the literature on this topic is sparse.',
+ Methods:`Describe the pipeline: Wikidata concept (${S.sel.id}) with multilingual labels and aliases plus related items found through Wikidata search (its subclasses, instances, facets and parts); query formulation as title-keyword groups (AND between groups, OR within); retrieval through the dblp SPARQL endpoint (QLever); backward and forward snowballing over OpenCitations links (cito:hasCitingEntity, cito:hasCitedEntity) restricted to dblp-indexed works; LLM-assisted outlier removal (threshold ${c.th}/10, model ${c.md}); metadata from dblp; and indicators (annual growth, h-index, Lotka distribution, collaboration indices, countries and institutions parsed from dblp author affiliations, title-derived keywords). State that dblp provides neither abstracts nor author keywords, that affiliations are the authors’ current dblp affiliations rather than those at publication time, and that citation counts are links from dblp-indexed works only.`,
+ Results:'Report the statistics: growth, citations, authors and productivity, leading venues, countries, institutions, international collaboration, title-derived keywords, the citation distribution, and the most cited works. Use only the supplied numbers.',
+ Discussion:'Interpret the results, compare with the previous studies where possible, and discuss limitations (dblp covers computer science only, title-only keyword matching, no abstracts or author keywords, incomplete and current-only affiliations, citation links limited to dblp-indexed works with open OpenCitations data, LLM filtering errors, snowballing bias).',
+ Conclusion:'Summarise key findings and suggest future work.'};
+ let md=`# A Scientometric Analysis of ${t}\n\n*Generated ${new Date().toISOString().slice(0,10)} from ${c.db}. Query: \`${q}\`*\n\n`,prevText='';
+ for(const [n,g] of Object.entries(G)){
+  log('Writing '+n+'…');
+  let x;try{x=await llm(`You are writing the "${n}" section of a scientometric paper on "${t}". Database: ${c.db}. Query: ${q}\nStatistics (JSON; use only these numbers): ${JSON.stringify(compact)}\nPrevious studies (cite only as [n]):\n${prev}\nPreceding text (for continuity): ${prevText.slice(-500)}\nTask: ${g}\nFormal academic English, 2–4 paragraphs, no heading, no lists, no invented numbers or references.`)}catch(e){x='*[generation failed: '+e.message+']*'}
+  md+=`## ${n}\n\n${x}\n\n`;prevText=x;
+  if(n==='Results')md+=tables(s)}
+ md+=`## References\n\n${S.prev.map((p,i)=>`[${i+1}] ${cite(p)}`).join('\n\n')}\n`;
+ S.paper=md;$('#paper').textContent=md;
+}
+const tb=(h,rows)=>`| ${h.join(' | ')} |\n|${h.map(()=>'---').join('|')}|\n${rows.map(r=>`| ${r.join(' | ')} |`).join('\n')}\n\n`;
+function tables(s){
+ return `**Table 1.** Main information\n\n`+tb(['Indicator','Value'],[['Works',s.docs],['Period',s.span.join('–')],['Annual growth (%)',s.annualGrowthPct??'n/a'],['Citation links from dblp-indexed works',s.totalCitations],['Mean citations/work',s.meanCitations],['h-index',s.hIndex],['Authors',s.authors],['Authors per work',s.authorsPerDoc],['Single-authored (%)',s.singleAuthorPct],['Cited at least once (%)',s.citedPct],['Mean references per work',s.meanReferences??'n/a'],['Works with author affiliation (%)',s.coverage.affiliationPct],['Works with a parsed country (%)',s.coverage.countryPct],['International collaboration (%)',s.intlCollabPct??'n/a']])
+ +`**Table 2.** Works per year\n\n`+tb(['Year','Works'],Object.entries(s.byYear))
+ +`**Table 3.** Lotka distribution (authors by number of works)\n\n`+tb(['Works','Authors'],s.lotka)
+ +`**Table 4.** Top authors\n\n`+tb(['Author','Works'],s.topAuthors)
+ +`**Table 5.** Top sources\n\n`+tb(['Source','Works'],s.topSources)
+ +`**Table 6.** Top countries (from author affiliations)\n\n`+tb(['Country','Works'],s.topCountries)
+ +`**Table 7.** Top institutions\n\n`+tb(['Institution','Works'],s.topInstitutions)
+ +`**Table 8.** Keywords (frequent title terms)\n\n`+tb(['Keyword','Works'],s.topKeywords)
+ +`**Table 9.** Frequent title bigrams\n\n`+tb(['Bigram','Works'],s.topBigrams)
+ +`**Table 10.** Citation distribution\n\n`+tb(['Citations','Works'],s.citationBins)
+ +`**Table 11.** Most cited works\n\n`+tb(['Title','Year','Citations'],s.topCited);
+}
+
+/* ---------- storage ---------- */
+const slug=()=>(S.terms[0]?.labels.en||S.sel.label).toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'')+'-'+C().db.toLowerCase()+'-'+new Date().toISOString().slice(0,10);
+const data=()=>JSON.stringify({wikidata:S.sel,database:C().db,query:$('#qry').value,terms:S.terms,stats:S.stats,previousStudies:S.prev,works:S.recs.map(({id,doi,title,year,cites,origin})=>({id,doi,title,year,cites,origin}))},null,1);
+const dl=(n,t)=>{const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([t]));a.download=n;a.click()};
+$('#dl').onclick=()=>dl(slug()+'.md',S.paper);$('#dj').onclick=()=>dl(slug()+'.json',data());
+async function put(path,text,tok,repo){
+ const u=`https://api.github.com/repos/${repo}/contents/${path}`,H={Authorization:'Bearer '+tok,Accept:'application/vnd.github+json'};
+ let sha;try{sha=(await J(u,{headers:H})).sha}catch(e){}
+ await J(u,{method:'PUT',headers:H,body:JSON.stringify({message:'Add scientometric study '+path,content:btoa(unescape(E(text))),sha})});
+}
+$('#gh').onclick=async()=>{
+ const repo=$('#rp').value.trim(),tok=$('#tk').value.trim(),dir=($('#pt').value||'studies').replace(/^\/|\/$/g,'')+'/'+slug();
+ if(!repo||!tok)return alert('Set the GitHub repo and token in Settings.');
+ try{await put(dir+'/paper.md',S.paper,tok,repo);await put(dir+'/data.json',data(),tok,repo);log(`Stored: https://github.com/${repo}/tree/main/${dir}`)}catch(e){log('GitHub error: '+e.message)}
+};
+
+/* ---------- step UI ---------- */
+const STEPS=[['Wikidata labels, aliases and related terms',terms],['Formulate query with local LLM',query],['Search dblp via SPARQL',search],['Snowballing (OpenCitations references and citing works)',snowball],['LLM outlier filtering',filt],['Metadata check',metadata],['Statistical analysis',stats],['Previous productivity studies',prior],['Write the paper with local LLM',write]];
+STEPS.forEach(([n,f],i)=>{const d=document.createElement('div');d.style.cssText='display:flex;gap:8px;align-items:center;margin:6px 0';
+ d.innerHTML=`<button class="g">Run</button><span style="flex:1">${i+1}. ${n}</span><span class="badge"></span>`;$('#steps').append(d);
+ STEPS[i].push(d);d.querySelector('button').onclick=()=>run(i)});
+async function run(i){
+ const [n,f,d]=STEPS[i],b=d.querySelector('.badge');b.className='badge';b.textContent='running…';
+ try{await f();b.textContent='done';b.className='badge ok';return true}catch(e){b.textContent='failed';b.className='badge er';log(`✗ ${n}: ${e.message}`);return false}
+}
+$('#all').onclick=async()=>{$('#all').disabled=true;for(let i=0;i<STEPS.length;i++){if(i===2&&!$('#qry').value.trim())break;if(!await run(i))break}$('#all').disabled=false};
+</script></body></html>
