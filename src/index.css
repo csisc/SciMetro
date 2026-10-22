@@ -1,0 +1,125 @@
+@import "tailwindcss";
+
+:root {
+  --bg: #ffffff;
+  --fg: #1a1a1a;
+  --mut: #666666;
+  --card: #f5f5f2;
+  --bd: #d8d8d4;
+  --ac: #0b5fff;
+  --ok: #1a8a4a;
+  --er: #c62828;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #151515;
+    --fg: #eeeeee;
+    --mut: #9a9a9a;
+    --card: #211f1f;
+    --bd: #3a3a3a;
+    --ac: #6ea2ff;
+    --ok: #5cc98a;
+    --er: #ff7b7b;
+  }
+}
+
+body {
+  margin: 0;
+  background-color: var(--bg);
+  color: var(--fg);
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+  font-size: 15px;
+  line-height: 1.5;
+}
+
+.scimetro-card {
+  background-color: var(--card);
+  border: 1px solid var(--bd);
+  border-radius: 10px;
+  padding: 14px;
+}
+
+.scimetro-btn {
+  background-color: var(--ac);
+  color: #ffffff;
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-weight: 500;
+  transition: all 0.15s ease;
+  cursor: pointer;
+}
+.scimetro-btn:hover:not(:disabled) {
+  filter: brightness(1.08);
+}
+.scimetro-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.scimetro-btn-ghost {
+  background-color: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--bd);
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-weight: 500;
+  transition: all 0.15s ease;
+  cursor: pointer;
+}
+.scimetro-btn-ghost:hover:not(:disabled) {
+  border-color: var(--ac);
+}
+.scimetro-btn-ghost:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.scimetro-input {
+  background-color: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--bd);
+  border-radius: 6px;
+  padding: 6px 9px;
+  width: 100%;
+  font-size: 14px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.scimetro-input:focus {
+  border-color: var(--ac);
+  box-shadow: 0 0 0 1px var(--ac);
+}
+
+.badge-tag {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--mut);
+}
+.badge-tag.ok {
+  color: var(--ok);
+}
+.badge-tag.er {
+  color: var(--er);
+}
+.badge-tag.running {
+  color: var(--ac);
+}
+
+/* Academic table styling */
+.prose-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+  margin: 12px 0;
+}
+.prose-table th,
+.prose-table td {
+  border-bottom: 1px solid var(--bd);
+  padding: 5px 10px;
+  text-align: left;
+}
+.prose-table th {
+  font-weight: 600;
+  color: var(--fg);
+}

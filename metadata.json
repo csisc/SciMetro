@@ -1,0 +1,8 @@
+{
+  "name": "SciMetro Studio",
+  "description": "Publication-grade scientometric study generator powered by Wikidata QLever with authors, keywords, countries, institutions, collaboration networks, and LLM assistance.",
+  "permissions": [],
+  "capabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
