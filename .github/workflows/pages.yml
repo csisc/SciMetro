@@ -7,7 +7,7 @@ on:
       - index.html
       - src/**
       - studies/**
-      - scripts/build_site.py
+      - scripts/**
       - package.json
       - package-lock.json
       - bun.lock
@@ -29,26 +29,41 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
+          cache: npm
+          cache-dependency-path: |
+            package-lock.json
+            package.json
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Install dependencies
+      - name: Install Node dependencies
         run: |
-          pip install markdown
-          npm ci || npm install
+          if [ -f package-lock.json ]; then npm ci; else npm install; fi
 
-      - name: Build site (app + stored studies)
-        run: python scripts/build_site.py
+      - name: Type-check
+        run: npm run lint
+
+      - name: Build site
         env:
           STUDIES_DIR: studies
+          BASE_PATH: /${{ github.event.repository.name }}/
+        run: |
+          if [ -f scripts/build_site.py ]; then
+            python3 -m pip install markdown
+            python3 scripts/build_site.py
+          else
+            # Fallback: plain Vite build (tsc already ran in the lint step)
+            npx vite build --base="$BASE_PATH" --outDir _site
+            if [ -d studies ]; then cp -r studies _site/studies; fi
+          fi
+
+      - name: Verify build output
+        run: test -f _site/index.html
 
       - uses: actions/configure-pages@v5
 
