@@ -209,7 +209,7 @@ LIMIT ${maxResults}
       map.set(workUri, {
         id: workUri,
         title: (r.title || qid).replace(/\.$/, ''),
-        year: parseInt(r.year, 10) || new Date().getFullYear(),
+        year: parseInt(r.year, 10) || 0,
         venue: r.venueLabel || '',
         doi: (r.doi || '').replace('https://doi.org/', ''),
         omid: qid,
@@ -243,7 +243,7 @@ export async function enrichMetadata(
 
     // 1. Authors & Institutional affiliation query (flat, indexed, sub-second execution)
     const authorsSparql = `
-SELECT ?work ?author ?authorName ?instLabel WHERE {
+SELECT ?work ?author ?authorName ?instLabel ?countryLabel WHERE {
   VALUES ?work { ${workValues} }
   ?work wdt:P50 ?author .
   ?author rdfs:label ?authorName .
@@ -252,6 +252,11 @@ SELECT ?work ?author ?authorName ?instLabel WHERE {
     ?author wdt:P108 ?inst .
     ?inst rdfs:label ?instLabel .
     FILTER(LANG(?instLabel) = 'en')
+    OPTIONAL {
+      ?inst wdt:P17 ?ctry .
+      ?ctry rdfs:label ?countryLabel .
+      FILTER(LANG(?countryLabel) = 'en')
+    }
   }
 }
 LIMIT 400
@@ -264,7 +269,7 @@ LIMIT 400
         if (!pub || !row.author) return;
         const authorUri = row.author;
         const aff = row.instLabel || '';
-        const country = countryOf(aff);
+        const country = row.countryLabel || countryOf(aff);
 
         let author = pub.authors.find((a) => a.k === authorUri);
         if (!author) {
@@ -359,7 +364,7 @@ LIMIT 50
       newWorks.push({
         id: r.work,
         title: (r.title || getQid(r.work)).replace(/\.$/, ''),
-        year: parseInt(r.year, 10) || new Date().getFullYear(),
+        year: parseInt(r.year, 10) || 0,
         venue: r.venueLabel || '',
         doi: (r.doi || '').replace('https://doi.org/', ''),
         omid: getQid(r.work),
@@ -488,57 +493,19 @@ LIMIT 20
   const seenTitles = new Set<string>();
   const uniquePrior: Publication[] = [];
 
+  // Title-keyword classification ONLY. The tool never reads these papers, so it makes no
+  // claim about their scope, methods, findings or gaps (those fields stay undefined).
   const classifyReview = (
     title: string
-  ): {
-    reviewType: 'bibliometric' | 'systematic_review' | 'conceptual_survey';
-    scope: string;
-    methodology: string;
-    keyFindings: string;
-    researchGap: string;
-  } => {
+  ): { reviewType: 'bibliometric' | 'systematic_review' | 'conceptual_survey' } => {
     const t = title.toLowerCase();
-    if (
-      t.includes('bibliometric') ||
-      t.includes('scientometric') ||
-      t.includes('citation') ||
-      t.includes('mapping') ||
-      t.includes('informetric') ||
-      t.includes('co-citation')
-    ) {
-      return {
-        reviewType: 'bibliometric',
-        scope: `Quantitative mapping and citation dynamics in ${conceptLabel}`,
-        methodology: 'Bibliometric citation analysis and co-occurrence modeling',
-        keyFindings: 'Quantified publication trajectories and identified core journals and prolific authors.',
-        researchGap:
-          'Constrained to proprietary subscription database silos (WoS/Scopus); lacks open linked knowledge graph reproducibility and multi-network institutional topologies.',
-      };
+    if (/bibliometric|scientometric|informetric|co-citation|citation analysis|mapping/.test(t)) {
+      return { reviewType: 'bibliometric' };
     }
-    if (
-      t.includes('systematic review') ||
-      t.includes('meta-analysis') ||
-      t.includes('prisma') ||
-      t.includes('scoping review') ||
-      t.includes('evidence')
-    ) {
-      return {
-        reviewType: 'systematic_review',
-        scope: `Systematic evidence synthesis and methodological frameworks in ${conceptLabel}`,
-        methodology: 'PRISMA protocol, explicit inclusion criteria, and qualitative evidence synthesis',
-        keyFindings: 'Synthesized theoretical foundations, empirical protocols, and clinical/computational interventions.',
-        researchGap:
-          'Focused predominantly on qualitative intervention outcomes; lacks longitudinal macroscopic bibliometric indicators and collaborative network topologies.',
-      };
+    if (/systematic review|meta-analysis|scoping review|prisma/.test(t)) {
+      return { reviewType: 'systematic_review' };
     }
-    return {
-      reviewType: 'conceptual_survey',
-      scope: `Thematic evolution, taxonomy formulation, and state-of-the-art overview in ${conceptLabel}`,
-      methodology: 'Comprehensive domain literature synthesis and taxonomic classification',
-      keyFindings: 'Articulated core architectural paradigms, thematic taxonomies, and open technical challenges.',
-      researchGap:
-        'Lacks empirical informetric law validation (Lotka, Bradford, Price) and statistical co-authorship network modeling.',
-    };
+    return { reviewType: 'conceptual_survey' };
   };
 
   rows.forEach((r) => {
@@ -555,8 +522,8 @@ LIMIT 20
     uniquePrior.push({
       id: r.work,
       title: rawTitle,
-      year: parseInt(r.year, 10) || new Date().getFullYear(),
-      venue: r.venueLabel || 'Scholarly Journal / Proceedings',
+      year: parseInt(r.year, 10) || 0,
+      venue: r.venueLabel || '',
       doi: (r.doi || '').replace('https://doi.org/', ''),
       omid: getQid(r.work),
       cites: parseInt(r.cites, 10) || 0,

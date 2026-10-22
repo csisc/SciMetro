@@ -11,6 +11,9 @@ import {
   ScientometricNetwork,
   NetworkNode,
   NetworkEdge,
+  LotkaFit,
+  PriceShare,
+  DataCoverage,
 } from '../types';
 
 const STOP_WORDS = new Set(
@@ -81,23 +84,109 @@ const CA: Record<string, string> = {
 const CS = new Set(CN);
 const titleCase = (x: string) => x.replace(/\b\w/g, (m) => m.toUpperCase());
 
+// Names that are also US states, people or ordinary words: never matched by free-text
+// scanning, only accepted as the final comma-separated segment of an affiliation string
+// (and "georgia" additionally needs a Georgian city to rule out the US state).
+const AMBIGUOUS = new Set(['georgia', 'jordan', 'oman', 'india', 'chad', 'niger', 'mali', 'peru']);
+const escapeRe = (x: string) => x.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
 export const countryOf = (aff: string): string => {
   if (!aff) return '';
-  const p = aff
-    .split(',')
-    .map((x) => x.trim().toLowerCase().replace(/\.$/, ''))
-    .reverse();
-  for (const x of p.slice(0, 3)) {
-    const k = CA[x] || x;
-    if (CS.has(k)) return titleCase(k);
-  }
-  // Substring check
   const lower = aff.toLowerCase();
+  const parts = lower
+    .split(',')
+    .map((x) => x.trim().replace(/\.$/, ''))
+    .reverse();
+
+  // 1. Exact match on the trailing comma-separated segments ("..., Germany")
+  for (const x of parts.slice(0, 2)) {
+    const k = CA[x] || x;
+    if (CS.has(k)) {
+      if (k === 'georgia' && !/tbilisi|kutaisi|batumi|republic of georgia/.test(lower)) continue;
+      return titleCase(k);
+    }
+  }
+
+  // 2. Whole-word scan (so "Indiana" != India, "Woman" != Oman, "Romania" != Oman)
   for (const c of CN) {
-    if (lower.includes(c)) return titleCase(c);
+    if (AMBIGUOUS.has(c)) continue;
+    if (new RegExp(`(^|[^\\p{L}])${escapeRe(c)}($|[^\\p{L}])`, 'u').test(lower)) return titleCase(c);
   }
   return '';
 };
+
+const median = (sortedDesc: number[]): number => {
+  const n = sortedDesc.length;
+  if (!n) return 0;
+  const mid = Math.floor(n / 2);
+  return n % 2 ? sortedDesc[mid] : (sortedDesc[mid - 1] + sortedDesc[mid]) / 2;
+};
+
+// Maximum-likelihood fit of Lotka's law f(x) = C / x^alpha on the finite support 1..xmax,
+// with a Kolmogorov-Smirnov goodness-of-fit test. MLE is used instead of the classical
+// least-squares log-log regression because the latter is dominated by the sparse tail
+// and is biased (Clauset, Shalizi & Newman, 2009).
+export function fitLotka(lotkaMap: Map<number, number>): LotkaFit | null {
+  const xs = [...lotkaMap.keys()].sort((a, b) => a - b);
+  const n = [...lotkaMap.values()].reduce((a, b) => a + b, 0);
+  if (xs.length < 3 || n < 10) return null; // too few distinct productivity levels to fit
+  const maxX = xs[xs.length - 1];
+  const sumLn = xs.reduce((a, x) => a + lotkaMap.get(x)! * Math.log(x), 0);
+
+  const logLik = (alpha: number) => {
+    let z = 0;
+    for (let x = 1; x <= maxX; x++) z += x ** -alpha;
+    return -alpha * sumLn - n * Math.log(z);
+  };
+
+  // Golden-section search; log-likelihood is concave in alpha
+  let lo = 0.01;
+  let hi = 8;
+  const phi = (Math.sqrt(5) - 1) / 2;
+  let c = hi - phi * (hi - lo);
+  let d = lo + phi * (hi - lo);
+  for (let i = 0; i < 80; i++) {
+    if (logLik(c) > logLik(d)) hi = d;
+    else lo = c;
+    c = hi - phi * (hi - lo);
+    d = lo + phi * (hi - lo);
+  }
+  const alpha = (lo + hi) / 2;
+
+  let norm = 0;
+  for (let x = 1; x <= maxX; x++) norm += x ** -alpha;
+  const C = 1 / norm;
+
+  // R^2 of observed vs model log-frequencies (descriptive only)
+  const lx = xs.map((x) => Math.log(lotkaMap.get(x)!));
+  const lm = xs.map((x) => Math.log(n * C * x ** -alpha));
+  const meanL = lx.reduce((a, b) => a + b, 0) / lx.length;
+  const ssTot = lx.reduce((a, v) => a + (v - meanL) ** 2, 0);
+  const ssRes = lx.reduce((a, v, i) => a + (v - lm[i]) ** 2, 0);
+  const r2 = ssTot ? 1 - ssRes / ssTot : 0;
+
+  let cumObs = 0;
+  let cumTheo = 0;
+  let D = 0;
+  for (let x = 1; x <= maxX; x++) {
+    cumObs += (lotkaMap.get(x) || 0) / n;
+    cumTheo += C * x ** -alpha;
+    D = Math.max(D, Math.abs(cumObs - cumTheo));
+  }
+  const ksCritical = 1.63 / Math.sqrt(n); // alpha = 0.01 (Pao, 1985)
+  return {
+    alpha: +alpha.toFixed(3),
+    C: +C.toFixed(4),
+    r2: +r2.toFixed(3),
+    ks: +D.toFixed(4),
+    ksCritical: +ksCritical.toFixed(4),
+    nAuthors: n,
+    maxWorks: maxX,
+    // Require both a non-significant KS test and a plausible exponent (>= 1): a flat
+    // distribution can trivially "fit" an alpha near zero and is not Lotka-like.
+    conforms: D <= ksCritical && alpha >= 1,
+  };
+}
 
 export function computeStudyStats(recs: Publication[]): StudyStats {
   const R = recs;
@@ -107,8 +196,10 @@ export function computeStudyStats(recs: Publication[]): StudyStats {
   const yrs = new Map<number, number>();
   const citesYrs = new Map<number, number>();
 
+  const missingYearDocs = R.filter((r) => !r.year).length;
   R.forEach((r) => {
-    const y = r.year || currentYear;
+    const y = r.year;
+    if (!y) return; // never impute a year: missing years are reported, not counted as "this year"
     yrs.set(y, (yrs.get(y) || 0) + 1);
     citesYrs.set(y, (citesYrs.get(y) || 0) + (r.cites || 0));
   });
@@ -130,6 +221,7 @@ export function computeStudyStats(recs: Publication[]): StudyStats {
   const pts = fullYears.map((y) => [y, Math.log(yrs.get(y) || 1)] as [number, number]);
   let annualGrowthPct: number | null = null;
   let doublingTimeYears: number | null = null;
+  let growthR2: number | null = null;
 
   if (pts.length > 2) {
     const n = pts.length;
@@ -140,6 +232,11 @@ export function computeStudyStats(recs: Publication[]): StudyStats {
     const denom = n * sxx - sx * sx;
     if (denom !== 0) {
       const slope = (n * sxy - sx * sy) / denom;
+      const intercept = (sy - slope * sx) / n;
+      const meanY = sy / n;
+      const ssTot = pts.reduce((a, p) => a + (p[1] - meanY) ** 2, 0);
+      const ssRes = pts.reduce((a, p) => a + (p[1] - (intercept + slope * p[0])) ** 2, 0);
+      growthR2 = ssTot ? +(1 - ssRes / ssTot).toFixed(3) : null;
       const rate = Math.exp(slope) - 1;
       annualGrowthPct = +(rate * 100).toFixed(2);
       if (rate > 0) {
@@ -152,9 +249,7 @@ export function computeStudyStats(recs: Publication[]): StudyStats {
   const sortedCitations = R.map((r) => r.cites || 0).sort((a, b) => b - a);
   const totalCitations = sortedCitations.reduce((a, b) => a + b, 0);
   const meanCitations = R.length ? +(totalCitations / R.length).toFixed(2) : 0;
-  const medianCitations = sortedCitations.length
-    ? sortedCitations[Math.floor(sortedCitations.length / 2)]
-    : 0;
+  const medianCitations = median(sortedCitations);
 
   // Hirsch h-index
   let hIndex = 0;
@@ -313,21 +408,52 @@ export function computeStudyStats(recs: Publication[]): StudyStats {
     lotkaMap.set(a.works, (lotkaMap.get(a.works) || 0) + 1);
   });
 
-  const lotkaSingleCount = lotkaMap.get(1) || 1;
-  const lotka: LotkaRow[] = [1, 2, 3, 4].map((k) => {
-    const obs = lotkaMap.get(k) || 0;
-    // Theoretical Lotka: f(k) = f(1) / k^2
-    const theo = Math.round(lotkaSingleCount / (k * k));
-    return { works: k, observed: obs, theoretical: theo };
-  });
+  const lotkaFit = fitLotka(lotkaMap);
+  const alphaUsed = lotkaFit ? lotkaFit.alpha : 2; // 2 = classical reference when no fit is possible
+  const lotkaMaxX = Math.max(1, ...lotkaMap.keys());
+  let lotkaNorm = 0;
+  for (let x = 1; x <= lotkaMaxX; x++) lotkaNorm += 1 / x ** alphaUsed;
+  const theoFor = (k: number) => Math.round((totalAuthors / lotkaNorm) / k ** alphaUsed);
 
+  const lotka: LotkaRow[] = [1, 2, 3, 4].map((k) => ({
+    works: k,
+    observed: lotkaMap.get(k) || 0,
+    theoretical: theoFor(k),
+  }));
   let sum5PlusObs = 0;
   let sum5PlusTheo = 0;
-  for (let k = 5; k <= 50; k++) {
+  for (let k = 5; k <= lotkaMaxX; k++) {
     sum5PlusObs += lotkaMap.get(k) || 0;
-    sum5PlusTheo += Math.round(lotkaSingleCount / (k * k));
+    sum5PlusTheo += theoFor(k);
   }
   lotka.push({ works: '5+', observed: sum5PlusObs, theoretical: sum5PlusTheo });
+
+  // Price's law: do the sqrt(N) most productive authors produce ~50% of the output?
+  const byProductivity = allAuthorsList.map((a) => a.works).sort((a, b) => b - a);
+  const totalAuthorships = byProductivity.reduce((a, b) => a + b, 0);
+  const eliteAuthorships = byProductivity.slice(0, priceEliteCount).reduce((a, b) => a + b, 0);
+  const priceShare: PriceShare = {
+    eliteAuthors: priceEliteCount,
+    eliteAuthorships,
+    totalAuthorships,
+    sharePct: totalAuthorships ? +((100 * eliteAuthorships) / totalAuthorships).toFixed(1) : 0,
+  };
+
+  // Data coverage: how much of the corpus the indicators are actually based on
+  const pctOf = (f: (r: Publication) => boolean) =>
+    R.length ? +((100 * R.filter(f).length) / R.length).toFixed(1) : 0;
+  const coverage: DataCoverage = {
+    docs: R.length,
+    withYearPct: pctOf((r) => !!r.year),
+    withAuthorsPct: pctOf((r) => r.authors.length > 0),
+    withAffiliationPct: pctOf((r) => r.authors.some((a) => !!a.aff)),
+    withCountryPct: pctOf((r) => r.authors.some((a) => !!a.country)),
+    withVenuePct: pctOf((r) => !!r.venue),
+    withDoiPct: pctOf((r) => !!r.doi),
+    withKeywordsPct: pctOf((r) => (r.keywords || []).length > 0),
+    citedPct: pctOf((r) => (r.cites || 0) > 0),
+    missingYearDocs,
+  };
 
   // 4. Bradford's Law for Sources (Journals / Venues)
   const sourceMap = new Map<string, { works: number; citations: number }>();
@@ -524,6 +650,9 @@ export function computeStudyStats(recs: Publication[]): StudyStats {
     cumulativeByYear,
     annualGrowthPct,
     doublingTimeYears,
+    growthR2,
+    growthYearsUsed: pts.length,
+    excludedMissingYear: missingYearDocs,
     totalCitations,
     meanCitations,
     medianCitations,
@@ -542,7 +671,10 @@ export function computeStudyStats(recs: Publication[]): StudyStats {
       : 0,
     priceEliteCount,
     lotka,
-    lotkaExponent: 2.0,
+    lotkaExponent: alphaUsed,
+    lotkaFit,
+    priceShare,
+    coverage,
     degreeOfCollaboration,
     collaborationIndex,
     collaborationCoefficient,
