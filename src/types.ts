@@ -132,6 +132,37 @@ export interface KeywordRanking {
   percentage: number;
 }
 
+export interface LotkaFit {
+  alpha: number;          // fitted exponent (least squares on log-log, Pao 1985)
+  C: number;              // normalising constant over observed range
+  r2: number;             // goodness of the log-log fit
+  ks: number;             // Kolmogorov-Smirnov D statistic (max |F_obs - F_theo|)
+  ksCritical: number;     // critical D at alpha = 0.01 (1.63 / sqrt(n))
+  nAuthors: number;
+  maxWorks: number;
+  conforms: boolean;      // ks <= ksCritical
+}
+
+export interface PriceShare {
+  eliteAuthors: number;   // ceil(sqrt(N))
+  eliteAuthorships: number;
+  totalAuthorships: number;
+  sharePct: number;       // Price predicts ~50%
+}
+
+export interface DataCoverage {
+  docs: number;
+  withYearPct: number;
+  withAuthorsPct: number;
+  withAffiliationPct: number;
+  withCountryPct: number;
+  withVenuePct: number;
+  withDoiPct: number;
+  withKeywordsPct: number;
+  citedPct: number;
+  missingYearDocs: number;
+}
+
 export interface StudyStats {
   docs: number;
   span: [number, number];
@@ -140,6 +171,9 @@ export interface StudyStats {
   cumulativeByYear: Record<string, number>;
   annualGrowthPct: number | null;
   doublingTimeYears: number | null;
+  growthR2?: number | null;       // R^2 of the log-linear growth fit
+  growthYearsUsed?: number;       // complete calendar years in the fit
+  excludedMissingYear?: number;   // works lacking a publication year (excluded from time series)
 
   // Impact metrics
   totalCitations: number;
@@ -156,7 +190,10 @@ export interface StudyStats {
   singleAuthorPct: number;
   priceEliteCount: number;
   lotka: LotkaRow[];
-  lotkaExponent: number;
+  lotkaExponent: number;          // fitted alpha when estimable, else 2 (reference value)
+  lotkaFit?: LotkaFit | null;
+  priceShare?: PriceShare;
+  coverage?: DataCoverage;
 
   // Collaboration indices
   degreeOfCollaboration: number; // DC (Subramanyam, 1983)

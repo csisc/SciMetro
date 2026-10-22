@@ -231,7 +231,11 @@ export const App: React.FC = () => {
     list.forEach((r) => {
       if (!uniqueMap.has(r.id)) uniqueMap.set(r.id, r);
     });
-    const cleaned = [...uniqueMap.values()].filter((r) => r.title && r.year);
+    const deduped = [...uniqueMap.values()];
+    const cleaned = deduped.filter((r) => r.title && r.year);
+    addLog(
+      `Screening: ${list.length} records → ${deduped.length} after de-duplication by Wikidata ID (${list.length - deduped.length} duplicates) → ${cleaned.length} with title and publication year (${deduped.length - cleaned.length} excluded for missing year/title).`
+    );
 
     // Ensure enrichment
     const missingAuthors = cleaned.filter((r) => !r.authors.length);
