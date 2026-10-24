@@ -1106,8 +1106,8 @@ export const ResultsView: React.FC<ResultsViewProps> = ({
                     <ManuscriptFigureCard
                       key={i}
                       figureNumber={7}
-                      title="Methodological workflow, systematic review taxonomy, and research gap positioning"
-                      note={`Identification, multi-class categorization (Bibliometric, SLR, State-of-the-Art), and gap formulation addressing proprietary database silos.`}
+                      title="Retrieval, screening and analysis workflow"
+                      note={`Record counts at each stage of retrieval and screening, as in a PRISMA-style flow.`}
                       stats={stats}
                       priorStudies={priorStudies}
                       topic={topic}
@@ -1214,8 +1214,8 @@ export const ResultsView: React.FC<ResultsViewProps> = ({
 
               <ManuscriptFigureCard
                 figureNumber={7}
-                title="Methodological workflow, systematic review taxonomy, and research gap positioning"
-                note={`Identification, multi-class categorization (Bibliometric, SLR, State-of-the-Art), and gap formulation addressing proprietary database silos.`}
+                title="Retrieval, screening and analysis workflow"
+                note={`Record counts at each stage of retrieval and screening, as in a PRISMA-style flow.`}
                 stats={stats}
                 priorStudies={priorStudies}
                 topic={topic}

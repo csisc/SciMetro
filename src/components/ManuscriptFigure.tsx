@@ -746,113 +746,50 @@ export const Figure6Institutions: React.FC<FigureProps> = ({ stats }) => {
 };
 
 // ----------------------------------------------------
-// FIGURE 7: Literature Review Taxonomy & Synthesis Flow
+// FIGURE 7: Retrieval, screening and analysis flow (counts from the actual run)
 // ----------------------------------------------------
-export const Figure7ReviewSynthesis: React.FC<FigureProps> = ({ priorStudies = [], topic }) => {
-  const svgW = 680;
-  const svgH = 260;
+export const Figure7ReviewSynthesis: React.FC<FigureProps> = ({ stats }) => {
+  const svgW = 700;
+  const svgH = 250;
+  const sc = stats?.screening;
+  const up = sc?.upstream;
+  const identified = up?.identified ?? sc?.received ?? stats?.docs ?? 0;
+  const removedUp = up ? up.duplicatesById + up.missingYearOrTitle : 0;
+  const removedScreen = (sc?.removed || []).reduce((a, r) => a + r.count, 0);
+  const included = sc?.included ?? stats?.docs ?? 0;
+  const search = stats?.origins?.['search'] || 0;
+  const snow = (stats?.origins?.['citing'] || 0) + (stats?.origins?.['reference'] || 0);
 
-  const countBib = priorStudies.filter((p) => p.reviewType === 'bibliometric').length;
-  const countSlr = priorStudies.filter((p) => p.reviewType === 'systematic_review').length;
-  const countSurvey = priorStudies.filter((p) => p.reviewType === 'conceptual_survey' || !p.reviewType).length;
+  const box = (x: number, title: string, lines: string[], cls: string) => (
+    <g transform={`translate(${x}, 40)`}>
+      <rect x="0" y="0" width="150" height="150" rx="6" className={cls} strokeWidth="1.2" />
+      <text x="75" y="22" fontSize="10" fontWeight="bold" fill="currentColor" textAnchor="middle">
+        {title}
+      </text>
+      {lines.map((l, i) => (
+        <text key={i} x="75" y={46 + i * 18} fontSize="8.5" fill="currentColor" opacity="0.85" textAnchor="middle">
+          {l}
+        </text>
+      ))}
+    </g>
+  );
+  const arrow = (x: number) => (
+    <g>
+      <line x1={x} y1="115" x2={x + 22} y2="115" stroke="currentColor" strokeOpacity="0.45" strokeWidth="2" />
+      <polygon points={`${x + 22},110 ${x + 30},115 ${x + 22},120`} fill="currentColor" fillOpacity="0.45" />
+    </g>
+  );
 
   return (
     <div className="w-full overflow-x-auto">
       <svg viewBox={`0 0 ${svgW} ${svgH}`} className="w-full max-h-[300px] text-[var(--fg)] font-sans">
-        {/* Step 1: Open Knowledge Graph Discovery */}
-        <g transform="translate(30, 80)">
-          <rect
-            x="0"
-            y="0"
-            width="140"
-            height="90"
-            rx="6"
-            className="fill-blue-500/10 stroke-blue-500/40"
-            strokeWidth="1.2"
-          />
-          <text x="70" y="22" fontSize="10" fontWeight="bold" fill="currentColor" textAnchor="middle">
-            1. Graph Identification
-          </text>
-          <text x="70" y="40" fontSize="8.5" fill="currentColor" opacity="0.8" textAnchor="middle">
-            Wikidata QLever SPARQL
-          </text>
-          <text x="70" y="55" fontSize="8" fill="currentColor" opacity="0.65" textAnchor="middle">
-            Subject triples (P921)
-          </text>
-          <text x="70" y="70" fontSize="8.5" fontWeight="600" fill="#2563eb" textAnchor="middle">
-            {priorStudies.length} Review Studies
-          </text>
-        </g>
-
-        {/* Arrow 1 */}
-        <path d="M 175 125 L 205 125" stroke="currentColor" strokeOpacity="0.4" strokeWidth="2" markerEnd="url(#arrow)" />
-
-        {/* Step 2: Categorization */}
-        <g transform="translate(210, 30)">
-          {/* Subcategory A */}
-          <g transform="translate(0, 0)">
-            <rect x="0" y="0" width="180" height="52" rx="4" className="fill-amber-500/10 stroke-amber-500/40" strokeWidth="1" />
-            <text x="10" y="18" fontSize="9.5" fontWeight="bold" fill="currentColor">
-              A. Bibliometric / Scientometric
-            </text>
-            <text x="10" y="34" fontSize="8" fill="currentColor" opacity="0.75">
-              Citation mapping, trends: {countBib} studies
-            </text>
-          </g>
-
-          {/* Subcategory B */}
-          <g transform="translate(0, 68)">
-            <rect x="0" y="0" width="180" height="52" rx="4" className="fill-emerald-500/10 stroke-emerald-500/40" strokeWidth="1" />
-            <text x="10" y="18" fontSize="9.5" fontWeight="bold" fill="currentColor">
-              B. Systematic Reviews (SLR)
-            </text>
-            <text x="10" y="34" fontSize="8" fill="currentColor" opacity="0.75">
-              PRISMA protocols: {countSlr} studies
-            </text>
-          </g>
-
-          {/* Subcategory C */}
-          <g transform="translate(0, 136)">
-            <rect x="0" y="0" width="180" height="52" rx="4" className="fill-indigo-500/10 stroke-indigo-500/40" strokeWidth="1" />
-            <text x="10" y="18" fontSize="9.5" fontWeight="bold" fill="currentColor">
-              C. Thematic & State-of-Art
-            </text>
-            <text x="10" y="34" fontSize="8" fill="currentColor" opacity="0.75">
-              Taxonomies, surveys: {countSurvey} studies
-            </text>
-          </g>
-        </g>
-
-        {/* Arrow 2 */}
-        <path d="M 395 125 L 425 125" stroke="currentColor" strokeOpacity="0.4" strokeWidth="2" />
-
-        {/* Step 3: Synthesis & Scientometric Gap */}
-        <g transform="translate(430, 60)">
-          <rect
-            x="0"
-            y="0"
-            width="220"
-            height="130"
-            rx="6"
-            className="fill-rose-500/10 stroke-rose-500/40"
-            strokeWidth="1.2"
-          />
-          <text x="110" y="24" fontSize="10" fontWeight="bold" fill="currentColor" textAnchor="middle">
-            3. Research Gap Positioning
-          </text>
-          <text x="16" y="45" fontSize="8.5" fill="currentColor" opacity="0.85">
-            • Beyond closed subscription silos (WoS/Scopus)
-          </text>
-          <text x="16" y="65" fontSize="8.5" fill="currentColor" opacity="0.85">
-            • Longitudinal linked open data reproducibility
-          </text>
-          <text x="16" y="85" fontSize="8.5" fill="currentColor" opacity="0.85">
-            • Multi-network topologies (Authors, Institutions)
-          </text>
-          <text x="16" y="105" fontSize="8.5" fill="currentColor" opacity="0.85">
-            • Rigorous informetric laws (Lotka, Bradford, Price)
-          </text>
-        </g>
+        {box(10, '1. Identification', ['Wikidata via QLever', `${identified} records`, 'topic search + snowballing'], 'fill-blue-500/10 stroke-blue-500/40')}
+        {arrow(165)}
+        {box(200, '2. Screening', [`${removedUp} duplicate / no year`, `${removedScreen} journal items,`, 'DOI or title duplicates'], 'fill-amber-500/10 stroke-amber-500/40')}
+        {arrow(355)}
+        {box(390, '3. Included', [`${included} works`, `${search} topic search`, `${snow} snowballed`], 'fill-emerald-500/10 stroke-emerald-500/40')}
+        {arrow(545)}
+        {box(580, '4. Analysis', ['Growth, citations,', 'Lotka, Bradford,', 'networks, benchmarks'], 'fill-indigo-500/10 stroke-indigo-500/40')}
       </svg>
     </div>
   );
