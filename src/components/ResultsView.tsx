@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { StudyStats, Publication } from '../types';
 import { ScientometricNetworkGraph } from './ScientometricNetworkGraph';
 import { ManuscriptFigureCard } from './ManuscriptFigure';
+import { ManuscriptMarkdown, figureDiagrams, figureSpec } from './ManuscriptMarkdown';
 import {
   BarChart2,
   TrendingUp,
@@ -99,11 +100,8 @@ export const ResultsView: React.FC<ResultsViewProps> = ({
     }
   };
 
-  // Helper to extract mermaid code from markdown blocks
-  const extractMermaidCode = (text: string): string => {
-    const match = text.match(/```mermaid([\s\S]*?)```/);
-    return match ? match[1].trim() : '';
-  };
+  // Diagram of each figure, taken from the fence that follows its own caption
+  const diagrams = React.useMemo(() => figureDiagrams(paperMarkdown), [paperMarkdown]);
 
   return (
     <section className="scimetro-card mb-6" id="out">
@@ -952,200 +950,7 @@ export const ResultsView: React.FC<ResultsViewProps> = ({
           {/* Mode 1: Formatted Journal Article with Embedded Figures */}
           {paperMode === 'article' && stats && (
             <div className="bg-[var(--bg)] border border-[var(--bd)] rounded-xl p-6 text-xs leading-relaxed max-h-[620px] overflow-y-auto space-y-4 font-serif">
-              {paperMarkdown.split('\n\n').map((paragraph, i) => {
-                const trimmed = paragraph.trim();
-
-                // Title H1
-                if (trimmed.startsWith('# ')) {
-                  return (
-                    <div key={i} className="border-b border-[var(--bd)] pb-3 mb-4">
-                      <span className="text-[10px] uppercase font-sans tracking-widest text-blue-600 dark:text-blue-400 font-bold block mb-1">
-                        Original Scientometric Research Article
-                      </span>
-                      <h1 className="text-xl md:text-2xl font-bold font-sans text-[var(--fg)] leading-tight">
-                        {trimmed.slice(2)}
-                      </h1>
-                    </div>
-                  );
-                }
-
-                // Section Heading H2
-                if (trimmed.startsWith('## ')) {
-                  return (
-                    <h2
-                      key={i}
-                      className="text-base font-bold font-sans text-[var(--fg)] mt-6 mb-2 pb-1 border-b border-[var(--bd)] flex items-center gap-2"
-                    >
-                      <span className="w-2 h-2 rounded-full bg-[var(--ac)] inline-block"></span>
-                      <span>{trimmed.slice(3)}</span>
-                    </h2>
-                  );
-                }
-
-                // Subsection H3
-                if (trimmed.startsWith('### ')) {
-                  return (
-                    <h3 key={i} className="text-xs font-bold font-sans text-[var(--fg)] mt-4 mb-1 text-[var(--ac)]">
-                      {trimmed.slice(4)}
-                    </h3>
-                  );
-                }
-
-                // Subsection H4
-                if (trimmed.startsWith('#### ')) {
-                  return (
-                    <h4 key={i} className="text-xs font-semibold font-sans text-[var(--fg)] mt-3 mb-1">
-                      {trimmed.slice(5)}
-                    </h4>
-                  );
-                }
-
-                // Abstract Box
-                if (trimmed.includes('**Context and Objectives:**') || trimmed.startsWith('### Abstract')) {
-                  return (
-                    <div
-                      key={i}
-                      className="p-4 rounded-xl bg-blue-50/50 dark:bg-blue-950/20 border border-blue-500/20 my-4 font-sans text-xs space-y-2 leading-relaxed"
-                    >
-                      <span className="font-bold text-[var(--fg)] block text-sm">Abstract</span>
-                      <div className="text-[var(--fg)] space-y-1.5 opacity-90">{trimmed.replace('### Abstract', '')}</div>
-                    </div>
-                  );
-                }
-
-                // Figure 1 Replacement
-                if (trimmed.includes('**Figure 1.**')) {
-                  return (
-                    <ManuscriptFigureCard
-                      key={i}
-                      figureNumber={1}
-                      title="Annual scientific production trajectory, citation accumulation, and growth dynamics"
-                      note={`Corpus of ${stats.docs} publications (${stats.span[0]}–${stats.span[1]}). Calculated Compound Annual Growth Rate (CAGR): ${stats.annualGrowthPct}%, doubling time: ${stats.doublingTimeYears} years.`}
-                      stats={stats}
-                      topic={topic}
-                    />
-                  );
-                }
-
-                // Figure 2 Replacement
-                if (trimmed.includes('**Figure 2.**')) {
-                  return (
-                    <ManuscriptFigureCard
-                      key={i}
-                      figureNumber={2}
-                      title="Bradford's law of source scattering distribution model"
-                      note={`Partitioned into Core Nucleus (Zone 1: ${stats.bradfordZones[0]?.sourcesCount} journals), Extended (Zone 2: ${stats.bradfordZones[1]?.sourcesCount} journals), and Peripheral (Zone 3: ${stats.bradfordZones[2]?.sourcesCount} journals).`}
-                      stats={stats}
-                      topic={topic}
-                    />
-                  );
-                }
-
-                // Figure 3 Replacement (Co-authorship)
-                if (trimmed.includes('**Figure 3.**')) {
-                  return (
-                    <ManuscriptFigureCard
-                      key={i}
-                      figureNumber={3}
-                      title="High-density co-authorship collaborative clusters and primary scientific networks"
-                      note={`Topological network of ${stats.coauthorshipNetwork.nodes.length} scholars and ${stats.coauthorshipNetwork.edges.length} collaborative ties. Average degree: ${((2 * stats.coauthorshipNetwork.edges.length) / Math.max(1, stats.coauthorshipNetwork.nodes.length)).toFixed(2)}.`}
-                      mermaidCode={extractMermaidCode(trimmed)}
-                      stats={stats}
-                      topic={topic}
-                    />
-                  );
-                }
-
-                // Figure 4 Replacement (Keywords)
-                if (trimmed.includes('**Figure 4.**')) {
-                  return (
-                    <ManuscriptFigureCard
-                      key={i}
-                      figureNumber={4}
-                      title="Intellectual structure and thematic keyword co-occurrence fronts"
-                      note={`Semantic network of ${stats.keywordNetwork.nodes.length} subject concepts and ${stats.keywordNetwork.edges.length} relational edges.`}
-                      mermaidCode={extractMermaidCode(trimmed)}
-                      stats={stats}
-                      topic={topic}
-                    />
-                  );
-                }
-
-                // Figure 5 Replacement (Countries)
-                if (trimmed.includes('**Figure 5.**')) {
-                  return (
-                    <ManuscriptFigureCard
-                      key={i}
-                      figureNumber={5}
-                      title="Global cross-national scientific collaboration network and MCP distribution"
-                      note={`International collaboration matrix across ${stats.topCountries.length} countries. Multiple Country Publications (MCP) ratio: ${stats.mcpRatio}.`}
-                      mermaidCode={extractMermaidCode(trimmed)}
-                      stats={stats}
-                      topic={topic}
-                    />
-                  );
-                }
-
-                // Figure 6 Replacement (Institutions)
-                if (trimmed.includes('**Figure 6.**')) {
-                  return (
-                    <ManuscriptFigureCard
-                      key={i}
-                      figureNumber={6}
-                      title="Inter-institutional research alliances and university collaboration topology"
-                      note={`Network of ${stats.institutionNetwork.nodes.length} academic universities and institutes linked by joint publications.`}
-                      stats={stats}
-                      topic={topic}
-                    />
-                  );
-                }
-
-                // Figure 7 Replacement (Literature Review Synthesis)
-                if (trimmed.includes('**Figure 7.**')) {
-                  return (
-                    <ManuscriptFigureCard
-                      key={i}
-                      figureNumber={7}
-                      title="Retrieval, screening and analysis workflow"
-                      note={`Record counts at each stage of retrieval and screening, as in a PRISMA-style flow.`}
-                      stats={stats}
-                      priorStudies={priorStudies}
-                      topic={topic}
-                    />
-                  );
-                }
-
-                // Tables
-                if (trimmed.startsWith('**Table')) {
-                  const parts = trimmed.split('\n\n');
-                  const title = parts[0];
-                  const tableBlock = parts.slice(1).join('\n\n') || trimmed;
-                  return (
-                    <div key={i} className="my-4 font-sans">
-                      <div className="font-bold text-xs text-[var(--fg)] mb-1.5 flex items-center gap-1.5">
-                        <span className="w-1.5 h-1.5 rounded-full bg-blue-500"></span>
-                        <span>{title}</span>
-                      </div>
-                      {renderMarkdownTable(tableBlock)}
-                    </div>
-                  );
-                }
-
-                if (trimmed.startsWith('|')) {
-                  return (
-                    <div key={i} className="my-3 font-sans overflow-x-auto">
-                      {renderMarkdownTable(trimmed)}
-                    </div>
-                  );
-                }
-
-                // Normal Paragraph
-                return (
-                  <p key={i} className="text-[var(--fg)] text-justify leading-relaxed">
-                    {trimmed}
-                  </p>
-                );
-              })}
+              <ManuscriptMarkdown markdown={paperMarkdown} stats={stats} topic={topic} />
             </div>
           )}
 
@@ -1163,59 +968,59 @@ export const ResultsView: React.FC<ResultsViewProps> = ({
 
               <ManuscriptFigureCard
                 figureNumber={1}
-                title="Annual scientific production trajectory, citation accumulation, and growth dynamics"
-                note={`Corpus of ${stats.docs} publications (${stats.span[0]}–${stats.span[1]}). Calculated Compound Annual Growth Rate (CAGR): ${stats.annualGrowthPct}%, doubling time: ${stats.doublingTimeYears} years.`}
+                title={figureSpec(1, stats).title}
+                note={figureSpec(1, stats).note}
                 stats={stats}
                 topic={topic}
               />
 
               <ManuscriptFigureCard
                 figureNumber={2}
-                title="Bradford's law of source scattering distribution model"
-                note={`Partitioned into Core Nucleus (Zone 1: ${stats.bradfordZones[0]?.sourcesCount} journals), Extended (Zone 2: ${stats.bradfordZones[1]?.sourcesCount} journals), and Peripheral (Zone 3: ${stats.bradfordZones[2]?.sourcesCount} journals).`}
+                title={figureSpec(2, stats).title}
+                note={figureSpec(2, stats).note}
                 stats={stats}
                 topic={topic}
               />
 
               <ManuscriptFigureCard
                 figureNumber={3}
-                title="High-density co-authorship collaborative clusters and primary scientific networks"
-                note={`Topological network of ${stats.coauthorshipNetwork.nodes.length} scholars and ${stats.coauthorshipNetwork.edges.length} collaborative ties.`}
-                mermaidCode={extractMermaidCode(paperMarkdown)}
+                title={figureSpec(3, stats).title}
+                note={figureSpec(3, stats).note}
+                mermaidCode={diagrams[3]}
                 stats={stats}
                 topic={topic}
               />
 
               <ManuscriptFigureCard
                 figureNumber={4}
-                title="Intellectual structure and thematic keyword co-occurrence fronts"
-                note={`Semantic network of ${stats.keywordNetwork.nodes.length} subject concepts and ${stats.keywordNetwork.edges.length} relational edges.`}
-                mermaidCode={extractMermaidCode(paperMarkdown)}
+                title={figureSpec(4, stats).title}
+                note={figureSpec(4, stats).note}
+                mermaidCode={diagrams[4]}
                 stats={stats}
                 topic={topic}
               />
 
               <ManuscriptFigureCard
                 figureNumber={5}
-                title="Global cross-national scientific collaboration network and MCP distribution"
-                note={`International collaboration matrix across ${stats.topCountries.length} countries. Multiple Country Publications (MCP) ratio: ${stats.mcpRatio}.`}
-                mermaidCode={extractMermaidCode(paperMarkdown)}
+                title={figureSpec(5, stats).title}
+                note={figureSpec(5, stats).note}
+                mermaidCode={diagrams[5]}
                 stats={stats}
                 topic={topic}
               />
 
               <ManuscriptFigureCard
                 figureNumber={6}
-                title="Inter-institutional research alliances and university collaboration topology"
-                note={`Network of ${stats.institutionNetwork.nodes.length} academic universities and institutes linked by joint publications.`}
+                title={figureSpec(6, stats).title}
+                note={figureSpec(6, stats).note}
                 stats={stats}
                 topic={topic}
               />
 
               <ManuscriptFigureCard
                 figureNumber={7}
-                title="Retrieval, screening and analysis workflow"
-                note={`Record counts at each stage of retrieval and screening, as in a PRISMA-style flow.`}
+                title={figureSpec(7, stats).title}
+                note={figureSpec(7, stats).note}
                 stats={stats}
                 priorStudies={priorStudies}
                 topic={topic}
@@ -1353,53 +1158,6 @@ function renderDualTimelineChart(stats: StudyStats) {
           );
         })}
       </svg>
-    </div>
-  );
-}
-
-function renderMarkdownTable(tableText: string) {
-  const lines = tableText
-    .split('\n')
-    .map((l) => l.trim())
-    .filter((l) => l.startsWith('|') && l.endsWith('|'));
-
-  if (lines.length < 2) return null;
-
-  const headers = lines[0]
-    .split('|')
-    .slice(1, -1)
-    .map((c) => c.trim());
-  const rows = lines.slice(2).map((line) =>
-    line
-      .split('|')
-      .slice(1, -1)
-      .map((c) => c.trim())
-  );
-
-  return (
-    <div className="overflow-x-auto my-1.5 border border-[var(--bd)] rounded-lg shadow-xs">
-      <table className="prose-table text-xs">
-        <thead>
-          <tr className="bg-black/5 dark:bg-white/5 border-b border-[var(--bd)]">
-            {headers.map((h, i) => (
-              <th key={i} className="py-2 px-3 font-semibold text-[var(--fg)] text-left">
-                {h}
-              </th>
-            ))}
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-[var(--bd)]">
-          {rows.map((row, ri) => (
-            <tr key={ri} className="hover:bg-black/2 dark:hover:bg-white/2 transition-colors">
-              {row.map((cell, ci) => (
-                <td key={ci} className="py-1.5 px-3 text-[var(--fg)]">
-                  {cell}
-                </td>
-              ))}
-            </tr>
-          ))}
-        </tbody>
-      </table>
     </div>
   );
 }
