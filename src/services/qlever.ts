@@ -140,6 +140,7 @@ SELECT ?work ?title ?year ?venueLabel ?doi (COUNT(?citing) AS ?cites) WHERE {
   OPTIONAL { ?work wdt:P1433 ?venue . ?venue rdfs:label ?venueLabel . FILTER(LANG(?venueLabel) = 'en') }
   OPTIONAL { ?work wdt:P356 ?doi }
   OPTIONAL { ?citing wdt:P2860 ?work }
+  FILTER NOT EXISTS { VALUES ?excludedType { wd:Q5633421 wd:Q737498 wd:Q1002697 wd:Q41298 } ?work wdt:P31 ?excludedType }
   ${titleFilter}
 }
 GROUP BY ?work ?title ?year ?venueLabel ?doi
@@ -237,8 +238,8 @@ export async function enrichMetadata(
 
   log(`Enriching authors and affiliations for ${recs.length} works from Wikidata…`);
 
-  // Enrich in lightweight batches of 20 works to completely avoid QLever 429 timeouts
-  for (const batch of chunk(recs, 20)) {
+  // Enrich in lightweight batches of 10 works to completely avoid QLever 429 timeouts
+  for (const batch of chunk(recs, 10)) {
     const workValues = batch.map((r) => `<${r.id}>`).join(' ');
 
     // 1. Authors & Institutional affiliation query (flat, indexed, sub-second execution)
@@ -259,11 +260,14 @@ SELECT ?work ?author ?authorName ?instLabel ?countryLabel WHERE {
     }
   }
 }
-LIMIT 400
+LIMIT 5000
 `;
 
     try {
       const rows = await executeQLever(authorsSparql, endpoint);
+      if (rows.length >= 5000) {
+        log('Warning: author query hit its row limit for a batch; some authors may be missing (collaboration indicators would be biased downward).');
+      }
       rows.forEach((row) => {
         const pub = byWork.get(row.work);
         if (!pub || !row.author) return;
@@ -300,7 +304,7 @@ SELECT ?work ?topicLabel WHERE {
   ?topic rdfs:label ?topicLabel .
   FILTER(LANG(?topicLabel) = 'en')
 }
-LIMIT 300
+LIMIT 3000
 `;
 
     try {

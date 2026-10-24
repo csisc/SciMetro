@@ -1,5 +1,27 @@
 import { AppSettings, Publication, StudyStats } from '../types';
 import { generateMarkdownTables } from './stats';
+import { Citer } from './references';
+import { compareWithLiterature } from './benchmarks';
+import { fetchCrossref, toRef, extractCorpusFacts } from './crossref';
+import type { CrossrefWork } from './crossref';
+import { synthesizePrior } from './grounded';
+import type { SourceForSynthesis } from './grounded';
+import { buildFront, buildBack, renumberTables } from './paper';
+import type { PriorEntry } from './paper';
+import { assessReadiness } from './readiness';
+import {
+  fmt,
+  lotkaSentence,
+  priceSentence,
+  collabSentence,
+  growthSentence,
+  citationStructureText,
+  periodText,
+  bradfordMultText,
+  clusterText,
+  screeningText,
+  coverageTable,
+} from './narrative';
 
 export async function callOllama(
   prompt: string,
@@ -278,57 +300,6 @@ function generateMermaidCountryGraph(s: StudyStats): string {
   return lines.join('\n');
 }
 
-// ---- Data-driven interpretation helpers: every verdict below comes from a computed test ----
-const fmt = (x: number | null | undefined, d = 1) => (x == null ? 'n/a' : String(+x.toFixed(d)));
-
-function lotkaSentence(s: StudyStats): string {
-  const f = s.lotkaFit;
-  if (!f) {
-    return `Lotka's law could not be fitted: the corpus has too few distinct productivity levels or authors with resolved identities (author-level indicators here rest on only ${s.authors} resolved authors).`;
-  }
-  const base = `A maximum-likelihood fit of Lotka's law over ${f.nAuthors} authors (1 to ${f.maxWorks} works) gives α = ${f.alpha} (C = ${f.C}); the Kolmogorov–Smirnov statistic is D = ${f.ks} against a 1% critical value of ${f.ksCritical}`;
-  return f.conforms
-    ? `${base}, so the hypothesis that author productivity follows Lotka's law is not rejected.`
-    : `${base}, so the hypothesis that author productivity follows Lotka's law is rejected at the 1% level${f.alpha < 1 ? ' (the fitted exponent is below 1, i.e. the distribution is flatter than any Lotka-type law)' : ''}.`;
-}
-
-function priceSentence(s: StudyStats): string {
-  const p = s.priceShare;
-  if (!p || !p.totalAuthorships) return '';
-  const verdict =
-    p.sharePct >= 45
-      ? 'consistent with'
-      : 'well below';
-  return `The √N = ${p.eliteAuthors} most productive authors account for ${p.sharePct}% of all authorships, ${verdict} the 50% that Price's law predicts.`;
-}
-
-function collabSentence(s: StudyStats): string {
-  const dc = s.degreeOfCollaboration;
-  const level = dc >= 0.8 ? 'high' : dc >= 0.5 ? 'moderate' : 'low';
-  return `Single-authored works make up ${s.singleAuthorPct}% of works with resolved authors (DC = ${dc}, a ${level} degree of collaboration; CC = ${s.collaborationCoefficient}).`;
-}
-
-function coverageTable(s: StudyStats): string {
-  const c = s.coverage;
-  if (!c) return '';
-  const rows: [string, number][] = [
-    ['Publication year', c.withYearPct],
-    ['≥1 author resolved to a Wikidata item', c.withAuthorsPct],
-    ['≥1 author with an institutional affiliation', c.withAffiliationPct],
-    ['≥1 author with an identifiable country', c.withCountryPct],
-    ['Publication venue', c.withVenuePct],
-    ['DOI', c.withDoiPct],
-    ['Subject keywords (P921)', c.withKeywordsPct],
-    ['Cited at least once within Wikidata', c.citedPct],
-  ];
-  return (
-    `**Table 0.** Metadata coverage of the analysed corpus (N = ${c.docs})\n\n| Field | Share of works (%) |\n|---|---|\n` +
-    rows.map(([k, v]) => `| ${k} | ${v} |`).join('\n') +
-    `\n\n`
-  );
-}
-
-
 export async function generatePaperWithLlm(
   topic: string,
   selectedId: string,
@@ -336,128 +307,92 @@ export async function generatePaperWithLlm(
   stats: StudyStats,
   priorStudies: Publication[],
   settings: AppSettings,
-  log: (msg: string) => void
+  log: (msg: string) => void,
+  deps: { fetchWork?: (doi: string) => Promise<CrossrefWork | null>; callModel?: (p: string) => Promise<string> } = {}
 ): Promise<string> {
-  const compact = {
-    totalDocs: stats.docs,
-    span: stats.span,
-    cagr: stats.annualGrowthPct,
-    doublingTime: stats.doublingTimeYears,
-    totalCitations: stats.totalCitations,
-    meanCitations: stats.meanCitations,
-    hIndex: stats.hIndex,
-    gIndex: stats.gIndex,
-    mQuotient: stats.mQuotient,
-    authors: stats.authors,
-    dc: stats.degreeOfCollaboration,
-    ci: stats.collaborationIndex,
-    cc: stats.collaborationCoefficient,
-    intlCollabPct: stats.internationalCollabPct,
-    mcpRatio: stats.mcpRatio,
-    topAuthors: stats.topAuthors.slice(0, 5).map((a) => `${a.name} (${a.works} works, ${a.citations} cites)`),
-    topCountries: stats.topCountries.slice(0, 5).map((c) => `${c.country} (${c.works} works)`),
-    topSources: stats.topSources.slice(0, 5).map((s) => s.name),
+  const date = new Date().toISOString().slice(0, 10);
+  const cite = new Citer();
+  const bench = compareWithLiterature(stats, cite);
+
+  // Resolve prior review-type works to complete references through Crossref (Wikidata author
+  // lists are often partial, so they are not used for citation).
+  log('Resolving references of prior studies through Crossref…');
+  const fetchWork = deps.fetchWork ?? ((doi: string) => fetchCrossref(doi));
+  const seen = new Set<string>();
+  const prior: PriorEntry[] = [];
+  for (const p of priorStudies.filter((x) => x.doi).slice(0, 12)) {
+    const d = p.doi.toLowerCase();
+    if (seen.has(d)) continue;
+    seen.add(d);
+    const work = await fetchWork(p.doi);
+    let key: string | null = null;
+    if (work) {
+      const ref = toRef(work, `prior:${work.doi}`);
+      if (ref) {
+        cite.register(ref);
+        key = ref.key;
+      }
+    }
+    prior.push({ pub: p, key, work: work || undefined, facts: work?.abstract ? extractCorpusFacts(work.abstract) : undefined });
+  }
+  log(`Prior studies: ${priorStudies.length} found, ${prior.filter((x) => x.key).length} resolved to complete references.`);
+
+  // Optional grounded synthesis with a local model (every sentence is validated against sources)
+  let priorSynthesis = '';
+  let llmUsed = false;
+  const modelCall =
+    deps.callModel ?? (settings.llmProvider === 'ollama' ? (pr: string) => callOllama(pr, false, settings) : null);
+  if (modelCall) {
+    const sources: SourceForSynthesis[] = prior
+      .filter((x) => x.key && x.work)
+      .slice(0, 8)
+      .map((x, i) => ({ tag: `S${i + 1}`, key: x.key!, year: x.work!.year || x.pub.year, title: x.work!.title, abstract: x.work!.abstract }));
+    try {
+      priorSynthesis = await synthesizePrior(topic, sources, cite, modelCall);
+      llmUsed = !!priorSynthesis;
+      log(llmUsed ? 'Grounded synthesis of prior studies accepted after validation.' : 'Grounded synthesis not used (too few abstracts or no sentence passed validation).');
+    } catch (e: any) {
+      log(`Grounded synthesis skipped: ${e.message}`);
+    }
+  }
+
+  const ctx = {
+    topic, selectedId, queryText, stats, settings, cite, bench, prior,
+    priorTotal: priorStudies.length, priorSynthesis, llmUsed, date,
   };
-
-  const prevFormatted = priorStudies.map((p, i) => `[${i + 1}] ${citePublication(p)}`).join('\n\n');
-
-  // Publication-ready structured manuscript title and frontmatter
-  let md = `# Mapping the Intellectual Structure and Collaboration Topologies of ${topic}: A Longitudinal Scientometric Investigation using Linked Open Knowledge Graphs\n\n`;
-  md += `*Draft generated automatically by SciMetro Studio — not peer reviewed; all interpretations must be verified by the authors before submission.*\n`;
-  md += `*Data source: ${settings.db} (SPARQL endpoint: \`${settings.qleverUrl}\`). Data retrieved and analysed on ${new Date().toISOString().slice(0, 10)}. Wikidata is continuously edited, so results will change over time.*\n\n`;
-
-  // Abstract formatted for Scientometrics / Journal of Informetrics
-  md += `### Abstract\n\n`;
-  md += `**Purpose:** This study maps the growth, sources, authorship, collaboration and thematic structure of the scholarly literature on ${topic}, using bibliographic records openly available in Wikidata via the QLever SPARQL endpoint.\n\n`;
-  md += `**Methodology:** ${stats.docs} works with publication years between ${stats.span[0]} and ${stats.span[1]} were retrieved (${stats.origins['search'] || 0} by topic search, ${(stats.origins['citing'] || 0) + (stats.origins['reference'] || 0)} added by one-step citation snowballing). Author identities are those recorded as Wikidata items; no further name disambiguation was performed. We computed growth, citation-impact, collaboration and source-concentration indicators, tested Lotka's law by maximum likelihood with a Kolmogorov–Smirnov test, and built co-authorship, co-word, institutional and country networks.\n\n`;
-  md += `**Findings:** Annual output grew at ${stats.annualGrowthPct != null ? `${stats.annualGrowthPct}% per year (log-linear fit over ${stats.growthYearsUsed ?? 'n/a'} complete years, R² = ${fmt(stats.growthR2, 2)}${stats.doublingTimeYears ? `; doubling time ${stats.doublingTimeYears} years` : ''})` : 'a rate that could not be estimated (too few complete years)'}. The corpus has ${stats.totalCitations.toLocaleString()} within-Wikidata citation links (h = ${stats.hIndex}, g = ${stats.gIndex}). ${collabSentence(stats)} ${stats.internationalCollabPct != null ? `Of the works with at least one identifiable country, ${stats.internationalCollabPct}% involved authors from more than one country.` : 'Country information was too sparse to estimate international collaboration.'} ${lotkaSentence(stats)}\n\n`;
-  md += `**Limitations:** Indicators are conditional on Wikidata's coverage, which is partial and uneven (see Table 0); results should be read as a description of the Wikidata-indexed literature rather than of the whole field.\n\n`;
-  md += `**Keywords:** Scientometrics, Bibliometrics, ${topic}, Knowledge Graphs, Wikidata QLever, Co-authorship Networks, Lotka's Law, Bradford's Law, Information Science.\n\n---\n\n`;
-
-  // Section 1: Introduction
-  log('Writing Section 1: Introduction & Theoretical Framework…');
-  md += `## 1. Introduction and Theoretical Framework\n\n`;
-  md += `Quantitative studies of scientific literature, building on the work of Price, Merton and Garfield, describe how specialties emerge, grow and organise themselves. This paper applies standard informetric indicators to the literature on ${topic}.\n\n`;
-  md += `Scholarly communication behaves as an evolving complex adaptive network shaped by cumulative advantage (the Matthew effect in science) and socio-cognitive clustering. Studying ${topic} through open linked data makes the analysis reproducible in a way that proprietary bibliographic databases do not; Wikidata, queried here through QLever, holds a large but incomplete share of the scholarly record, and its coverage limits are quantified in Section 3.3.\n\n`;
-  md += `To systematically interrogate this corpus, our investigation addresses four formal research questions:\n\n`;
-  md += `- **RQ1 (Temporal Expansion & Velocity):** What is the historical trajectory, compound annual growth rate (CAGR), and literature doubling time of scientific publications concerning ${topic}?\n`;
-  md += `- **RQ2 (Dissemination Channels & Dispersion):** How is scientific output scattered across journals and proceedings, and to what extent does it conform to Bradford's law of scattering?\n`;
-  md += `- **RQ3 (Authorship Stratification & Elite Concentration):** How are scientific contributions distributed among prolific authors, and does author productivity follow Lotka's law and Price's square-root elite conjecture?\n`;
-  md += `- **RQ4 (Relational Collaboration Topologies):** What are the structural and topological characteristics of the co-authorship collaboration networks, institutional alliances, thematic keyword co-occurrences, and cross-national research axes?\n\n`;
-
-  // Section 2: Related Works & Systematic Literature Appraisal
-  log('Writing Section 2: Related Works & Systematic Literature Review…');
-  md += `## 2. Related Works and Prior Reviews\n\n`;
-  md += `Scientometric and conceptual inquiries into ${topic} have evolved through distinct phases: foundational conceptualizations, domain-specific empirical trials, and recent quantitative mappings. A critical appraisal of existing surveys, meta-analyses, and bibliometric evaluations is vital to identify methodological boundaries, assess citation velocity, and articulate the unresolved research gaps that motivate our investigation.\n\n`;
-
-  md += `### 2.1 Conceptual Background\n`;
-  md += `*[Authors: add a substantive conceptual background for ${topic} here. SciMetro does not generate it because it has not read the literature.]*\n\n`;
-
-  md += `### 2.2 Previously Published Reviews Indexed in Wikidata\n`;
-  if (priorStudies.length > 0) {
-    const cnt = (t: string) => priorStudies.filter((p) => p.reviewType === t).length;
-    md += `A Wikidata search for review-type works on ${topic} (title keywords such as review, survey, bibliometric, systematic, plus review-article item classes) returned ${priorStudies.length} candidates: ${cnt('bibliometric')} labelled bibliometric, ${cnt('systematic_review')} systematic reviews and ${cnt('conceptual_survey')} other surveys. **These labels come from title keywords only; the full texts were not read, so Table 2 makes no claim about their methods, data sources, findings or gaps.**\n\n`;
-    md += `**Table 2.** Review-type works on ${topic} retrieved from Wikidata (title-based classification)\n\n`;
-    md += `| Ref | First author (year) | Type (from title) | Venue | Citations in Wikidata |\n| :--- | :--- | :--- | :--- | ---: |\n`;
-    priorStudies.slice(0, 10).forEach((p, idx) => {
-      const firstAuth = p.authors.length > 0 ? p.authors[0].name : 'n/a';
-      const typeLabel =
-        p.reviewType === 'bibliometric' ? 'Bibliometric' : p.reviewType === 'systematic_review' ? 'Systematic review' : 'Survey / other';
-      md += `| [${idx + 1}] | ${firstAuth} (${p.year || 'n.d.'}) | ${typeLabel} | ${(p.venue || '—').replace(/\|/g, '/')} | ${p.cites} |\n`;
-    });
-    md += `\n*[Authors: read these works and replace this subsection with a critical appraisal of their scope, data and conclusions.]*\n\n`;
-  } else {
-    md += `No review-type works on ${topic} were retrieved from Wikidata. This does not show that none exist: Wikidata's coverage is incomplete. *[Authors: complement with a manual literature search.]*\n\n`;
-  }
-
-  md += `### 2.3 Motivation\n`;
-  md += `This study applies a transparent, reproducible pipeline (open data, published queries) to ${topic}. Whether it fills a gap relative to existing reviews must be established by the authors after reading the works listed above.\n\n`;
-
-  // Section 3: Data & Methodology
-  log('Writing Section 3: Data & Scientometric Methodology…');
-  md += `## 3. Data and Scientometric Methodology\n\n`;
-  const searchN = stats.origins['search'] || 0;
-  const truncated = searchN >= settings.mx;
-  md += `### 3.1 Data Retrieval Protocol\n`;
-  md += `Records were retrieved from the QLever endpoint (${settings.qleverUrl}) on ${new Date().toISOString().slice(0, 10)}. The target concept (${selectedId}) and up to 15 related Wikidata items (subclass of, instance of, facet of, part of, has part) were used as main-subject values (\`wdt:P921\`), with a title filter: \`${queryText.replace(/\n/g, ' AND ')}\` (terms within a group are alternatives; groups are combined with AND). Works were then expanded by one step of forward and backward citation snowballing from the 20 most-cited seeds (\`wdt:P2860\`); snowballed works are not guaranteed to match the topic query. Works lacking a publication year or title were excluded, and duplicates were removed by Wikidata item identifier. The corpus therefore comprises ${searchN} topic-search records and ${(stats.origins['citing'] || 0) + (stats.origins['reference'] || 0)} snowballed records.\n\n`;
-  if (truncated) {
-    md += `> **Warning — truncated sample.** The topic search reached its configured limit of ${settings.mx} records and is ordered by citation count, so the corpus over-represents highly cited works. Citation, growth and concentration indicators are therefore **not** estimates for the whole literature.\n\n`;
-  }
-
-  md += `### 3.2 Indicators\n`;
-  md += `1. **Growth:** log-linear regression of annual counts on year over complete calendar years (the current, partial year is excluded): $r = \\exp(\\beta) - 1$; doubling time $t_d = \\ln 2 / \\ln(1 + r)$; fit quality is reported as R². Years with zero output cannot enter a log regression and are omitted.\n`;
-  md += `2. **Citation impact:** h-index, g-index and m-quotient on within-Wikidata citation counts (links of type \`wdt:P2860\` between Wikidata items). These are not comparable with Web of Science, Scopus or Google Scholar counts, and are not normalised for age or field.\n`;
-  md += `3. **Lotka's law:** $f(x) = C / x^{\\alpha}$ fitted by maximum likelihood on the finite support $1..x_{max}$, tested with the Kolmogorov–Smirnov statistic at the 1% level (critical value $1.63/\\sqrt{n}$), full counting. A fit is accepted only if the test is not rejected and $\\alpha \\ge 1$.\n`;
-  md += `4. **Price's law:** the share of authorships held by the $\\lceil\\sqrt{N_a}\\rceil$ most productive authors, compared with the predicted 50%.\n`;
-  md += `5. **Bradford's law:** sources ranked by yield and split into three zones of approximately equal numbers of works.\n`;
-  md += `6. **Collaboration:** Subramanyam's $DC = N_m / (N_m + N_s)$ and Ajiferuke's $CC = 1 - \\sum_k (1/k) f_k / N$, computed on works with at least one resolved author; international collaboration is the share of works whose resolved authors span more than one country, among works with at least one identifiable country.\n`;
-  md += `7. **Networks:** undirected graphs restricted to the top-ranked nodes of each type (25 authors, 20 keywords, 18 countries and institutions); density $2|E| / (|V|(|V|-1))$ and mean degree $2|E| / |V|$.\n\n`;
-
-  md += `### 3.3 Data Quality and Coverage\n`;
-  md += coverageTable(stats);
-  md += `Authors are counted only when recorded as Wikidata items (\`wdt:P50\`). Authors recorded as plain name strings (\`wdt:P2093\`) are **not** retrieved, so author counts, productivity, collaboration indices and co-authorship networks describe the resolved subset only and can be strongly biased when that subset is small. Countries come from the institution's country statement (\`wdt:P17\`) where available, otherwise from parsing the affiliation label; affiliations reflect the author's recorded employer, not necessarily the affiliation at publication time.\n\n`;
+  let md = buildFront(ctx);
 
   // Section 4: Empirical Results
   log('Writing Section 4: Empirical Results & Figures…');
-  md += `## 4. Empirical Results\n\n`;
+  md += `### 3.5 Screening and selection diagnostics\n`;
+  md += screeningText(stats);
 
-  md += `### 4.1 Publication Trajectory and Growth Dynamics\n`;
+  md += `## 4. Results\n\n`;
+
+  md += `### 4.1 Publication trajectory and growth\n`;
+  md += `Growth is modelled as described in Section 3.2 and compared with published rates in Section 5.2. `;
   md += `The retrieved corpus encompasses ${stats.docs} publications published between ${stats.span[0]} and ${stats.span[1]}. The fitted annual growth rate is ${stats.annualGrowthPct != null ? `${stats.annualGrowthPct}%` : 'N/A'} (${stats.growthYearsUsed ?? 0} complete years, R² = ${fmt(stats.growthR2, 2)})${
     stats.doublingTimeYears ? `, implying a doubling time of ${stats.doublingTimeYears} years` : ''
-  }${(stats.excludedMissingYear || 0) > 0 ? `; ${stats.excludedMissingYear} works without a year were excluded` : ''}. The total citation accumulation reached ${stats.totalCitations.toLocaleString()} citations across the surveyed timeframe (Mean: ${stats.meanCitations} citations/work, Median: ${stats.medianCitations}). The overall intellectual impact is reflected in a Hirsch h-index of ${stats.hIndex}, an Egghe g-index of ${stats.gIndex}, and an m-quotient of ${stats.mQuotient ?? 'N/A'}.\n\n`;
+  }${(stats.excludedMissingYear || 0) > 0 ? `; ${stats.excludedMissingYear} works without a year were excluded` : ''}. The total citation accumulation reached ${stats.totalCitations.toLocaleString()} citations across the surveyed timeframe (Mean: ${stats.meanCitations} citations/work, Median: ${stats.medianCitations}). The citation indicators are a Hirsch h-index of ${stats.hIndex}, an Egghe g-index of ${stats.gIndex}, and an m-quotient of ${stats.mQuotient ?? 'N/A'}.\n\n`;
+  md += `${growthSentence(stats)} ${periodText(stats)}\n\n`;
+  md += `#### Citation structure\n${citationStructureText(stats)}\n\n`;
   md += `**Figure 1.** *Annual scientific production trajectory, citation accumulation, and exponential growth dynamics for ${topic} (${stats.span[0]}–${stats.span[1]}).*\n\n`;
 
-  md += `### 4.2 Dissemination Sources and Bradford's Law of Scattering\n`;
+  md += `### 4.2 Sources and Bradford's law\n`;
+  md += `Sources were ranked by yield and divided into three zones of approximately equal numbers of works, following ${cite.n('bradford1934')}. `;
   md += `Bradford scattering analysis partitioned the dissemination venues into three zones. Zone 1 (Core Nucleus) comprises ${stats.bradfordZones[0]?.sourcesCount || 0} core sources producing ${stats.bradfordZones[0]?.worksCount || 0} works (${stats.bradfordZones[0]?.percentage || 0}% of the literature). Prominent core dissemination vehicles include ${stats.topSources.slice(0, 4).map((s) => `*${s.name}* (${s.works} works)`).join(', ') || 'specialized academic venues'}. Zone 2 (Extended Zone) contains ${stats.bradfordZones[1]?.sourcesCount || 0} sources yielding ${stats.bradfordZones[1]?.worksCount || 0} works, while Zone 3 (Peripheral Scattering) encompasses ${stats.bradfordZones[2]?.sourcesCount || 0} sources.\n\n`;
+  md += `${bradfordMultText(stats)}\n\n`;
   md += `**Figure 2.** *Bradford's law of source scattering: Core Nucleus (Zone 1), Extended (Zone 2), and Peripheral (Zone 3) distribution.*\n\n`;
 
-  md += `### 4.3 Authorship Stratification and Lotka's Law\n`;
+  md += `### 4.3 Authorship and Lotka's law\n`;
+  md += `Author productivity is assessed against Lotka's law ${cite.p('lotka1926')}, fitted by maximum likelihood ${cite.p('clauset2009')}, and against Price's square-root law ${cite.p('price1963')}. `;
   md += `${stats.authors} distinct authors with Wikidata identities appear in the corpus (${stats.authorsPerDoc} resolved authors per work). ${collabSentence(stats)} ${lotkaSentence(stats)} ${priceSentence(stats)}\n\n`;
 
-  md += `### 4.4 Scientometric Networks and Topological Analysis\n\n`;
+  md += `### 4.4 Networks\n\n`;
 
   // 4.4.1 Co-authorship
-  md += `#### 4.4.1 Co-authorship Network Architecture\n`;
+  md += `#### 4.4.1 Co-authorship network\n`;
+  md += `Collaboration networks of scientists are typically clustered ${cite.p('newman2001')}; here only the most productive authors are shown, so density and clustering describe that subgraph and are not comparable with whole-network values. `;
   md += `The co-authorship network consists of ${stats.coauthorshipNetwork.nodes.length} primary author nodes and ${stats.coauthorshipNetwork.edges.length} collaborative ties. Topological analysis indicates an average degree of ${
     stats.coauthorshipNetwork.nodes.length ? +((2 * stats.coauthorshipNetwork.edges.length) / stats.coauthorshipNetwork.nodes.length).toFixed(2) : 0
   } and network density of ${
@@ -471,15 +406,17 @@ export async function generatePaperWithLlm(
   }
 
   // 4.4.2 Thematic Keywords
-  md += `#### 4.4.2 Thematic Keyword Co-occurrence Topology and Intellectual Fronts\n`;
-  md += `Co-word analysis reveals the conceptual backbone of ${topic}. The keyword co-occurrence network comprises ${stats.keywordNetwork.nodes.length} nodes and ${stats.keywordNetwork.edges.length} relational edges. High-frequency keywords reflect core thematic clusters, while co-occurrence tie strengths indicate emerging cross-thematic bridges (Table 14).\n\n`;
+  md += `#### 4.4.2 Subject-term network and thematic clusters\n`;
+  md += `Subject terms and title words are normalised and the search terms removed (Section 3.2); association strength is measured by Salton's cosine ${cite.p('glanzel2001')}. `;
+  md += `Co-word analysis reveals the conceptual backbone of ${topic}. The keyword co-occurrence network comprises ${stats.keywordNetwork.nodes.length} nodes and ${stats.keywordNetwork.edges.length} relational edges. High-frequency keywords reflect core thematic clusters, while co-occurrence tie strengths indicate emerging cross-thematic bridges (Table 14). ${clusterText(stats)}\n\n`;
   const kwMermaid = generateMermaidKeywordGraph(stats);
   if (kwMermaid) {
     md += `**Figure 4.** *Intellectual structure and thematic keyword co-occurrence fronts:*\n\n${kwMermaid}\n`;
   }
 
   // 4.4.3 International Collaboration
-  md += `#### 4.4.3 International Scientific Collaboration Networks\n`;
+  md += `#### 4.4.3 International collaboration\n`;
+  md += `Country links are compared after Salton-cosine and affinity normalisation ${cite.p('glanzel2001', 'zitt2000')}; the normalised links are in Table 27. `;
   md += `Multiple Country Publications (MCP) accounted for ${stats.multiCountryPubs} works, representing an international collaboration ratio of ${stats.internationalCollabPct != null ? `${stats.internationalCollabPct}%` : 'N/A'} (MCP ratio = ${stats.mcpRatio}). The cross-national collaboration network encompasses ${stats.countryNetwork.nodes.length} countries and ${stats.countryNetwork.edges.length} bilateral collaborative linkages (Table 15).\n\n`;
   const countryMermaid = generateMermaidCountryGraph(stats);
   if (countryMermaid) {
@@ -487,52 +424,30 @@ export async function generatePaperWithLlm(
   }
 
   // 4.4.4 Institutional Alliances
-  md += `#### 4.4.4 Institutional Collaboration Topologies\n`;
+  md += `#### 4.4.4 Institutional collaboration\n`;
   md += `The institutional collaboration network comprises ${stats.institutionNetwork.nodes.length} institutions linked by ${stats.institutionNetwork.edges.length} ties, each meaning that authors from both institutions co-appear on at least one work (Table 16).\n\n`;
   md += `**Figure 6.** *Inter-institutional research alliances and university collaboration topology.*\n\n`;
 
   // 4.4.5 Literature Review Synthesis Figure
-  md += `#### 4.4.5 Systematic Review Synthesis Architecture\n`;
-  md += `**Figure 7.** *Methodological workflow, systematic review taxonomy, and research gap positioning.*\n\n`;
+  md += `#### 4.4.5 Retrieval and screening flow\n`;
+  md += `**Figure 7.** *Retrieval, screening and analysis workflow with the number of records at each stage.*\n\n`;
 
   // Output all 16 academic tables
-  md += `### 4.5 Informetric Tables and Indicators\n\n`;
+  md += `### 4.5 Tables of indicators\n\nTables 17–27 report the additional citation-class, normalised-impact, period, growth-model and network indicators.\n\n`;
   md += generateMarkdownTables(stats);
 
-  // Section 5: Discussion
-  log('Writing Section 5: Discussion & Theoretical Implications…');
-  md += `## 5. Discussion\n\n`;
-  md += `The corpus grew at ${stats.annualGrowthPct != null ? `${stats.annualGrowthPct}% per year` : 'a rate that could not be estimated'}${stats.growthR2 != null ? ` (R² = ${fmt(stats.growthR2, 2)}${stats.growthR2 < 0.7 ? ', so a constant exponential rate describes the series poorly' : ''})` : ''}. Because Wikidata coverage itself expands over time, part of any growth measured here may reflect growing data entry rather than growing research output.\n\n`;
-  md += `${lotkaSentence(stats)} ${priceSentence(stats)} These tests apply to the ${stats.authors} authors that Wikidata resolves, not necessarily to all authors in the field.\n\n`;
-  md += `${collabSentence(stats)}${stats.internationalCollabPct != null ? ` International co-authorship is ${stats.internationalCollabPct}% among works with identifiable countries` : ''}${stats.coverage ? ` (only ${stats.coverage.withCountryPct}% of works have any identifiable country, so this figure is indicative at best)` : ''}.\n\n`;
-  md += `*[Authors: interpret these results against the substantive literature on ${topic}; SciMetro does not generate theoretical interpretation.]*\n\n`;
+  log('Writing Discussion, Limitations, Conclusions, Declarations and References…');
+  md = cite.resolve(md);
+  md += buildBack(ctx);
+  md = renumberTables(md);
 
-  // Section 6: Limitations
-  log('Writing Section 6: Limitations…');
-  md += `## 6. Limitations\n\n`;
-  md += `1. **Coverage.** Wikidata covers only part of the scholarly record and unevenly across fields and years (Table 0). Metadata completeness for this corpus: authors ${stats.coverage?.withAuthorsPct ?? 'n/a'}%, affiliations ${stats.coverage?.withAffiliationPct ?? 'n/a'}%, countries ${stats.coverage?.withCountryPct ?? 'n/a'}%, keywords ${stats.coverage?.withKeywordsPct ?? 'n/a'}%.\n`;
-  md += `2. **Authors.** Only authors recorded as Wikidata items are retrieved; name-string authors (\`wdt:P2093\`) are missed, and no further disambiguation was done. Authorship, collaboration and network indicators are conditional on this subset.\n`;
-  md += `3. **Citations.** Counts are links between Wikidata items only and are not normalised by age or field; they are not comparable with Web of Science, Scopus or Google Scholar.\n`;
-  md += `4. **Sampling.** ${truncated ? `The topic search hit its ${settings.mx}-record limit and is ordered by citation count, biasing the corpus toward highly cited works. ` : ''}Title-keyword filtering and main-subject statements determine recall and precision; neither was validated against a gold-standard sample here. Snowballed works are not topic-filtered.\n`;
-  md += `5. **Single source.** No cross-validation against another database (e.g. OpenAlex, Scopus, Web of Science) was performed.\n`;
-  md += `6. **Keywords.** The co-word analysis mixes Wikidata subject items with words from titles and has no lemmatisation or thesaurus; clusters are not statistically validated.\n\n`;
-
-  // Section 7: Conclusion
-  log('Writing Section 7: Conclusion…');
-  md += `## 7. Conclusion\n\n`;
-  md += `This study profiled the Wikidata-indexed literature on ${topic}: ${stats.docs} works (${stats.span[0]}–${stats.span[1]}), their growth, citation distribution, source concentration, authorship and collaboration structure. Findings are conditional on the coverage limits in Section 6.\n\n`;
-  md += `The queries and indicator definitions above allow the analysis to be repeated; results should be re-run against current Wikidata and, ideally, cross-checked against a second bibliographic source.\n\n`;
-
-  // Section 8: References
-  log('Writing Section 8: References…');
-  md += `## 8. References\n\n`;
-  if (priorStudies.length > 0) {
-    priorStudies.forEach((p, idx) => {
-      md += `[${idx + 1}] ${citePublication(p)}\n\n`;
-    });
-  } else {
-    md += `*(No prior review studies indexed for this specific concept on Wikidata. Relevant literature cited directly in text.)*\n\n`;
-  }
+  const checks = assessReadiness({
+    stats, settings, markdown: md, cite,
+    priorTotal: priorStudies.length,
+    priorResolved: prior.filter((x) => x.key).length,
+    hypothesesAssessed: bench.filter((r) => r.isHypothesis && r.outcome !== 'not assessable').length,
+  });
+  checks.forEach((c) => log(`Pre-submission ${c.level.toUpperCase()}: ${c.message}`));
 
   log('Publication-ready academic manuscript generation complete.');
   return md;

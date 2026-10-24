@@ -15,6 +15,19 @@ import {
   PriceShare,
   DataCoverage,
 } from '../types';
+import {
+  screenRecords,
+  hIndexFamily,
+  characteristicScores,
+  concentration,
+  fitGrowthModels,
+  periodTable,
+  impactRows,
+  enrichEdges,
+  analyseNetwork,
+  diversity,
+  bradfordMultiplier,
+} from './scientometrics';
 
 const STOP_WORDS = new Set(
   'a an and are as at based by for from in into is it its of on or over the to towards toward using use via with within we our new approach study analysis system systems method methods paper review evaluation comparative international development research trends'.split(
@@ -28,6 +41,70 @@ export const cleanText = (t: string): string[] =>
     .replace(/[^\p{L}\p{N}\s-]/gu, ' ')
     .split(/\s+/)
     .filter((w) => w.length > 2 && !STOP_WORDS.has(w));
+
+const GENERIC_TERMS = new Set(
+  'result results data model models case cases associated association among between novel report reports survey role effect effects impact evidence outcome outcomes patient patients'.split(
+    ' '
+  )
+);
+
+const stem = (w: string): string =>
+  w.length > 4 && w.endsWith('ies')
+    ? w.slice(0, -3) + 'y'
+    : w.length > 4 && w.endsWith('s') && !/(ss|us|is)$/.test(w)
+    ? w.slice(0, -1)
+    : w;
+
+/** Case-, accent- and plural-insensitive form so "Tunisia"/"tunisia" and "cancers"/"cancer" merge. */
+export const normTerm = (t: string): string =>
+  stem(
+    t
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^\p{L}\p{N}\s-]/gu, ' ')
+      .trim()
+      .replace(/\s+/g, ' ')
+  );
+
+export const buildExcludeSet = (terms: string[] = []): Set<string> => {
+  const out = new Set<string>();
+  terms.forEach((t) => {
+    const n = normTerm(t);
+    if (n) out.add(n);
+    n.split(' ').forEach((w) => w && out.add(normTerm(w)));
+  });
+  return out;
+};
+
+/**
+ * Unique, normalised subject and title terms of a work; search terms and generic words removed.
+ * Terms are grouped on a stemmed key; `surfaces` records the original spellings so the most
+ * frequent one can be displayed ("genomics", not "genomic").
+ */
+export const docTermsOf = (
+  r: Publication,
+  exclude: Set<string>,
+  surfaces?: Map<string, Map<string, number>>
+): string[] => {
+  const raw = [
+    ...(r.keywords || []).map((k) => k.toLowerCase().trim()),
+    ...cleanText(r.title),
+  ];
+  const keys = new Set<string>();
+  raw.forEach((w) => {
+    const key = normTerm(w);
+    if (key.length <= 2 || STOP_WORDS.has(key) || GENERIC_TERMS.has(key) || exclude.has(key)) return;
+    if (keys.has(key)) return;
+    keys.add(key);
+    if (surfaces) {
+      const m = surfaces.get(key) || new Map<string, number>();
+      m.set(w, (m.get(w) || 0) + 1);
+      surfaces.set(key, m);
+    }
+  });
+  return [...keys];
+};
 
 export const topN = <T extends string | number>(a: T[], n: number): [T, number][] => {
   const m = new Map<T, number>();
@@ -188,9 +265,21 @@ export function fitLotka(lotkaMap: Map<number, number>): LotkaFit | null {
   };
 }
 
-export function computeStudyStats(recs: Publication[]): StudyStats {
-  const R = recs;
-  const currentYear = new Date().getFullYear();
+export interface StatsOptions {
+  /** Terms of the search itself (topic, query words): excluded from the co-word analysis. */
+  excludeTerms?: string[];
+  /** Apply record screening (journal items, duplicates). Default true. */
+  screen?: boolean;
+  upstream?: { identified: number; duplicatesById: number; missingYearOrTitle: number };
+  currentYear?: number;
+}
+
+export function computeStudyStats(recs: Publication[], opts: StatsOptions = {}): StudyStats {
+  const screened = opts.screen === false ? null : screenRecords(recs);
+  const R = screened ? screened.kept : recs;
+  const screening = screened ? { ...screened.report, upstream: opts.upstream } : undefined;
+  const currentYear = opts.currentYear ?? new Date().getFullYear();
+  const excludeSet = buildExcludeSet(opts.excludeTerms);
 
   // 1. Publication and Citation Timelines
   const yrs = new Map<number, number>();
@@ -251,21 +340,10 @@ export function computeStudyStats(recs: Publication[]): StudyStats {
   const meanCitations = R.length ? +(totalCitations / R.length).toFixed(2) : 0;
   const medianCitations = median(sortedCitations);
 
-  // Hirsch h-index
-  let hIndex = 0;
-  sortedCitations.forEach((c, idx) => {
-    if (c >= idx + 1) hIndex = idx + 1;
-  });
-
-  // Egghe g-index: largest g such that top g articles have >= g^2 citations
-  let gIndex = 0;
-  let cumCites = 0;
-  for (let i = 0; i < sortedCitations.length; i++) {
-    cumCites += sortedCitations[i];
-    if (cumCites >= (i + 1) * (i + 1)) {
-      gIndex = i + 1;
-    }
-  }
+  // h, g (Egghe: zero-padded, so g may exceed the number of papers), A and R
+  const hFamily = hIndexFamily(sortedCitations);
+  const hIndex = hFamily.h;
+  const gIndex = hFamily.g;
 
   // m-quotient: h-index / span of years
   const activeSpan = Math.max(1, maxYear - minYear + 1);
@@ -457,8 +535,10 @@ export function computeStudyStats(recs: Publication[]): StudyStats {
 
   // 4. Bradford's Law for Sources (Journals / Venues)
   const sourceMap = new Map<string, { works: number; citations: number }>();
+  const venueDocs = R.filter((r) => !!r.venue).length;
   R.forEach((r) => {
-    const v = r.venue || 'Unspecified Venue';
+    if (!r.venue) return; // works without a venue are reported in coverage, not treated as one "journal"
+    const v = r.venue;
     const s = sourceMap.get(v) || { works: 0, citations: 0 };
     s.works++;
     s.citations += r.cites || 0;
@@ -469,7 +549,7 @@ export function computeStudyStats(recs: Publication[]): StudyStats {
     .map(([name, data]) => ({ name, ...data }))
     .sort((a, b) => b.works - a.works);
 
-  const thirdDocs = R.length / 3;
+  const thirdDocs = venueDocs / 3;
   let runningDocs = 0;
   const zone1Sources: string[] = [];
   const zone2Sources: string[] = [];
@@ -498,7 +578,7 @@ export function computeStudyStats(recs: Publication[]): StudyStats {
       name: 'Zone 1 (Core Nucleus)',
       sourcesCount: zone1Sources.length,
       worksCount: zone1Docs,
-      percentage: R.length ? +((100 * zone1Docs) / R.length).toFixed(1) : 0,
+      percentage: venueDocs ? +((100 * zone1Docs) / venueDocs).toFixed(1) : 0,
       sources: zone1Sources.slice(0, 5),
     },
     {
@@ -506,7 +586,7 @@ export function computeStudyStats(recs: Publication[]): StudyStats {
       name: 'Zone 2 (Moderate Yield)',
       sourcesCount: zone2Sources.length,
       worksCount: zone2Docs,
-      percentage: R.length ? +((100 * zone2Docs) / R.length).toFixed(1) : 0,
+      percentage: venueDocs ? +((100 * zone2Docs) / venueDocs).toFixed(1) : 0,
       sources: zone2Sources.slice(0, 5),
     },
     {
@@ -514,7 +594,7 @@ export function computeStudyStats(recs: Publication[]): StudyStats {
       name: 'Zone 3 (Peripheral)',
       sourcesCount: zone3Sources.length,
       worksCount: zone3Docs,
-      percentage: R.length ? +((100 * zone3Docs) / R.length).toFixed(1) : 0,
+      percentage: venueDocs ? +((100 * zone3Docs) / venueDocs).toFixed(1) : 0,
       sources: zone3Sources.slice(0, 5),
     },
   ];
@@ -576,33 +656,38 @@ export function computeStudyStats(recs: Publication[]): StudyStats {
     .sort((a, b) => b.works - a.works)
     .slice(0, 15);
 
-  // 9. Keywords & Subject Taxonomy
+  // 9. Keywords & Subject Taxonomy (normalised; the search terms themselves are excluded)
+  const surfaces = new Map<string, Map<string, number>>();
+  const docTermLists = R.map((r) => docTermsOf(r, excludeSet, surfaces));
+  const display = (key: string): string => {
+    const m = surfaces.get(key);
+    if (!m) return key;
+    return [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))[0][0];
+  };
   const kwMap = new Map<string, number>();
-  R.forEach((r) => {
-    // Both Wikidata P921 keywords and clean title words
-    const subjects = r.keywords || [];
-    subjects.forEach((k) => {
-      if (k) kwMap.set(k, (kwMap.get(k) || 0) + 1);
-    });
-    cleanText(r.title).forEach((w) => {
-      kwMap.set(w, (kwMap.get(w) || 0) + 1);
-    });
-  });
+  docTermLists.forEach((terms) => terms.forEach((t) => kwMap.set(t, (kwMap.get(t) || 0) + 1)));
 
-  const topKeywords: KeywordRanking[] = [...kwMap.entries()]
-    .sort((a, b) => b[1] - a[1])
-    .slice(0, 25)
-    .map(([keyword, count]) => ({
-      keyword,
-      count,
-      percentage: R.length ? +((100 * count) / R.length).toFixed(1) : 0,
-    }));
+  const rankedKeys = [...kwMap.entries()].sort((x, y) => y[1] - x[1] || x[0].localeCompare(y[0]));
+  const topKeywords: KeywordRanking[] = rankedKeys.slice(0, 25).map(([key, count]) => ({
+    keyword: display(key),
+    count,
+    percentage: R.length ? +((100 * count) / R.length).toFixed(1) : 0,
+  }));
+  const keywordNodes = rankedKeys.slice(0, 30).map(([key, count]) => ({ key, name: display(key), count }));
 
   // Title bigrams
   const topBigrams = topN(
     R.flatMap((r) => {
       const wds = cleanText(r.title);
-      return [...new Set(wds.slice(1).map((x, i) => wds[i] + ' ' + x))];
+      return [
+        ...new Set(
+          wds
+            .slice(1)
+            .map((x, i) => [wds[i], x] as [string, string])
+            .filter(([u, v]) => !excludeSet.has(normTerm(u)) && !excludeSet.has(normTerm(v)))
+            .map(([u, v]) => u + ' ' + v)
+        ),
+      ];
     }),
     12
   );
@@ -629,16 +714,42 @@ export function computeStudyStats(recs: Publication[]): StudyStats {
 
   // 10. Interactive Scientometric Networks Construction
   // A. Co-authorship Network
-  const coauthorshipNetwork = buildCoauthorshipNetwork(R, topAuthors);
+  const coauthorshipNetwork = enrichEdges(buildCoauthorshipNetwork(R, topAuthors), R.length);
 
   // B. Keyword Co-occurrence Network
-  const keywordNetwork = buildKeywordNetwork(R, topKeywords);
+  const keywordNetwork = enrichEdges(buildKeywordNetwork(docTermLists, keywordNodes), R.length);
 
   // C. Country Collaboration Network
-  const countryNetwork = buildCountryNetwork(R, topCountries);
+  const countryNetwork = enrichEdges(buildCountryNetwork(R, topCountries), R.length);
 
   // D. Institution Collaboration Network
-  const institutionNetwork = buildInstitutionNetwork(R, topInstitutions);
+  const institutionNetwork = enrichEdges(buildInstitutionNetwork(R, topInstitutions), R.length);
+
+  // 11. Advanced indicators ------------------------------------------------------------------
+  const css = characteristicScores(sortedCitations);
+  const citationConcentration = concentration(sortedCitations);
+  const authorConcentration = concentration(allAuthorsList.map((a) => a.works));
+  const sourceConcentration = concentration([...sourceMap.values()].map((x) => x.works));
+  const growthModels = fitGrowthModels(fullYears.map((y) => [y, yrs.get(y) || 0] as [number, number]));
+  const { rows: periods, width: periodWidth } = periodTable(R, currentYear);
+
+  const groupBy = (keysOf: (r: Publication) => string[]) => {
+    const m = new Map<string, Publication[]>();
+    R.forEach((r) => [...new Set(keysOf(r).filter(Boolean))].forEach((k) => m.set(k, [...(m.get(k) || []), r])));
+    return m;
+  };
+  const countryImpact = impactRows(groupBy((r) => r.authors.map((a) => a.country)), R, 3, 10);
+  const institutionImpact = impactRows(groupBy((r) => r.authors.map((a) => a.aff)), R, 3, 10);
+  const venueImpact = impactRows(groupBy((r) => [r.venue]), R, 3, 10);
+
+  const networkAnalysis = {
+    coauthorship: analyseNetwork(coauthorshipNetwork),
+    keyword: analyseNetwork(keywordNetwork),
+    country: analyseNetwork(countryNetwork),
+    institution: analyseNetwork(institutionNetwork),
+  };
+  const diversityIdx = diversity(docTermLists);
+  const bradfordMult = bradfordMultiplier(zone1Sources.length, zone2Sources.length, zone3Sources.length);
 
   return {
     docs: R.length,
@@ -658,6 +769,7 @@ export function computeStudyStats(recs: Publication[]): StudyStats {
     medianCitations,
     hIndex,
     gIndex,
+    hFamily,
     mQuotient,
     authors: totalAuthors,
     docsPerAuthor: totalAuthors
@@ -696,6 +808,22 @@ export function computeStudyStats(recs: Publication[]): StudyStats {
     keywordNetwork,
     countryNetwork,
     institutionNetwork,
+    screening,
+    worksWithVenue: venueDocs,
+    bradfordMultiplier: bradfordMult,
+    css,
+    citationConcentration,
+    authorConcentration,
+    sourceConcentration,
+    growthModels,
+    periods,
+    periodWidth,
+    countryImpact,
+    institutionImpact,
+    venueImpact,
+    networkAnalysis,
+    diversity: diversityIdx,
+    excludedTerms: opts.excludeTerms || [],
   };
 }
 
@@ -740,50 +868,31 @@ function buildCoauthorshipNetwork(
 }
 
 function buildKeywordNetwork(
-  recs: Publication[],
-  topKw: KeywordRanking[]
+  docTerms: string[][],
+  top: { key: string; name: string; count: number }[]
 ): ScientometricNetwork {
-  const eligibleKw = new Set(topKw.slice(0, 20).map((k) => k.keyword.toLowerCase()));
-  const nodeMap = new Map<string, NetworkNode>();
+  const eligible = new Set(top.map((k) => k.key));
+  const nodes: NetworkNode[] = top.map((k) => ({
+    id: k.key,
+    name: k.name,
+    type: 'keyword',
+    weight: k.count,
+  }));
   const edgeMap = new Map<string, number>();
-
-  topKw.slice(0, 20).forEach((k) => {
-    const key = k.keyword.toLowerCase();
-    nodeMap.set(key, {
-      id: key,
-      name: k.keyword,
-      type: 'keyword',
-      weight: k.count,
-    });
-  });
-
-  recs.forEach((r) => {
-    const docTerms = [
-      ...(r.keywords || []),
-      ...cleanText(r.title),
-    ]
-      .map((w) => w.toLowerCase())
-      .filter((w) => eligibleKw.has(w));
-
-    const unique = [...new Set(docTerms)];
-    for (let i = 0; i < unique.length; i++) {
-      for (let j = i + 1; j < unique.length; j++) {
-        const u = unique[i];
-        const v = unique[j];
-        const key = u < v ? `${u}__${v}` : `${v}__${u}`;
+  docTerms.forEach((terms) => {
+    const u = terms.filter((t) => eligible.has(t));
+    for (let i = 0; i < u.length; i++) {
+      for (let j = i + 1; j < u.length; j++) {
+        const key = u[i] < u[j] ? `${u[i]}__${u[j]}` : `${u[j]}__${u[i]}`;
         edgeMap.set(key, (edgeMap.get(key) || 0) + 1);
       }
     }
   });
-
-  const edges: NetworkEdge[] = [...edgeMap.entries()]
-    .filter(([_, w]) => w >= 1)
-    .map(([k, weight]) => {
-      const [source, target] = k.split('__');
-      return { source, target, weight };
-    });
-
-  return { nodes: [...nodeMap.values()], edges };
+  const edges: NetworkEdge[] = [...edgeMap.entries()].map(([k, weight]) => {
+    const [source, target] = k.split('__');
+    return { source, target, weight };
+  });
+  return { nodes, edges };
 }
 
 function buildCountryNetwork(
@@ -876,7 +985,7 @@ function buildInstitutionNetwork(
   return { nodes: [...nodeMap.values()], edges };
 }
 
-export const generateMarkdownTables = (s: StudyStats): string => {
+const baseTables = (s: StudyStats): string => {
   const tb = (h: string[], rows: (string | number)[][]) =>
     `| ${h.join(' | ')} |\n|${h.map(() => '---').join('|')}|\n${rows
       .map((r) => `| ${r.join(' | ')} |`)
@@ -1113,3 +1222,173 @@ export const generateMarkdownTables = (s: StudyStats): string => {
     })()
   );
 };
+
+
+const mdTable = (h: string[], rows: (string | number)[][]) =>
+  `| ${h.join(' | ')} |\n|${h.map(() => '---').join('|')}|\n${rows
+    .map((r) => `| ${r.join(' | ')} |`)
+    .join('\n')}\n\n`;
+
+const fx = (x: number | null | undefined, d = 2) => (x == null ? 'n/a' : String(+x.toFixed(d)));
+
+/** Advanced indicators: citation classes, normalised impact, periods, growth models, networks. */
+const advancedTables = (s: StudyStats): string => {
+  let out = '';
+  if (s.css) {
+    out +=
+      `**Table 17.** Characteristic scores and scales of the citation distribution (Glänzel & Schubert, 1988); β₁ = ${s.css.beta1}, β₂ = ${s.css.beta2}, β₃ = ${s.css.beta3}\n\n` +
+      mdTable(
+        ['Class', 'Citations (c)', 'Works', '% of works', '% of citations'],
+        s.css.classes.map((c) => [c.label, c.rule, c.docs, c.docsPct, c.citationsPct])
+      );
+  }
+
+  const hf = s.hFamily;
+  out +=
+    `**Table 18.** Citation impact, concentration and dispersion indicators\n\n` +
+    mdTable(
+      ['Indicator', 'Value'],
+      [
+        ...(hf
+          ? [
+              ['h-index / g-index (Egghe, zero-padded)', `${hf.h} / ${hf.g}`],
+              ['A-index / R-index (h-core)', `${hf.a} / ${hf.r}`],
+              ['Share of all citations held by the h-core (%)', hf.hCoreSharePct],
+            ]
+          : []),
+        ['Uncited works (%)', s.screening?.uncitedPct ?? 'n/a'],
+        ['Gini coefficient — citations per work', s.citationConcentration?.gini ?? 'n/a'],
+        ['Citation share of the 10% most cited works (%)', s.citationConcentration?.top10PctShare ?? 'n/a'],
+        ['Gini coefficient — works per author', s.authorConcentration?.gini ?? 'n/a'],
+        ['Gini coefficient — works per source', s.sourceConcentration?.gini ?? 'n/a'],
+        [
+          'Bradford multiplier k (zone 2/1; zone 3/2)',
+          s.bradfordMultiplier ? `${fx(s.bradfordMultiplier.k1)}; ${fx(s.bradfordMultiplier.k2)}` : 'n/a',
+        ],
+        [
+          'Bradford sources per zone (1:2:3)',
+          s.bradfordMultiplier ? s.bradfordMultiplier.sourcesZone.join(' : ') : 'n/a',
+        ],
+        ...(s.diversity
+          ? [
+              ['Subject-term diversity: Shannon H / evenness', `${s.diversity.shannon} / ${s.diversity.evenness}`],
+              ['Subject-term diversity: Simpson / Rao–Stirling', `${s.diversity.simpson} / ${s.diversity.raoStirling}`],
+            ]
+          : []),
+      ]
+    );
+
+  if (s.periods && s.periods.length) {
+    out +=
+      `**Table 19.** Publications and citation impact by ${s.periodWidth}-year period (complete years only)\n\n` +
+      mdTable(
+        ['Period', 'Works', '% of works', 'Citations', 'Citations per work (CPP)', 'Citations per work per year', 'Authors per work', '% multi-author'],
+        s.periods.map((p) => [
+          p.label + (p.partial ? '*' : ''),
+          p.docs,
+          p.sharePct,
+          p.citations,
+          p.cpp,
+          p.cpy,
+          p.authorsPerDoc,
+          p.multiAuthorPct,
+        ])
+      ) +
+      `*Citations per work per year divides each work's citations by its years of exposure (publication year = 1). \\* = period truncated at the data limits.*\n\n`;
+  }
+
+  const impact = (title: string, label: string, rows?: StudyStats['countryImpact']) =>
+    rows && rows.length
+      ? `**${title}**\n\n` +
+        mdTable(
+          [label, 'Works', 'CPP', 'RCR', '% in top 10%'],
+          rows.map((r) => [r.name, r.works, r.cpp, fx(r.rcr), r.top10Pct ?? 'n/a'])
+        )
+      : '';
+  out += impact('Table 20. Relative citation impact of countries (≥ 3 works; RCR = observed / expected citations given each work\'s publication year, reference set = this corpus, Schubert & Braun, 1986)', 'Country', s.countryImpact);
+  out += impact('Table 21. Relative citation impact of sources (≥ 3 works)', 'Source', s.venueImpact);
+  out += impact('Table 22. Relative citation impact of institutions (≥ 3 works)', 'Institution', s.institutionImpact);
+
+  const g = s.growthModels;
+  if (g) {
+    out +=
+      `**Table 23.** Growth model comparison over ${g.n} years with output\n\n` +
+      mdTable(
+        ['Model', 'Parameter', 'R² (count scale)', 'Residual sum of squares'],
+        [
+          [
+            'Exponential (log-linear)',
+            `${g.exponential.ratePct}% per year (95% CI ${g.exponential.ciLowPct}% to ${g.exponential.ciHighPct}%)`,
+            g.exponential.r2Count,
+            g.exponential.rss,
+          ],
+          ['Linear', `${g.linear.slopePerYear} works per year`, g.linear.r2Count, g.linear.rss],
+        ]
+      ) +
+      `*Preferred model (lower residual sum of squares, equal parameter count): ${g.preferred}.*\n\n`;
+  }
+
+  const na = s.networkAnalysis;
+  if (na) {
+    const row = (name: string, a: NonNullable<StudyStats['networkAnalysis']>['keyword']) => [
+      name,
+      a.nodes,
+      a.edges,
+      a.density,
+      a.components,
+      a.transitivity,
+      a.modularity ?? 'n/a',
+      a.communities.filter((c) => c.size >= 2).length,
+      a.centrality
+        .slice(0, 3)
+        .map((c) => c.name)
+        .join('; ') || '—',
+    ];
+    out +=
+      `**Table 24.** Network structure: components, clustering, modularity and betweenness hubs\n\n` +
+      mdTable(
+        ['Network', 'Nodes', 'Edges', 'Density', 'Components', 'Transitivity', 'Modularity Q', 'Clusters (≥2)', 'Top betweenness'],
+        [
+          row('Co-authorship (top authors)', na.coauthorship),
+          row('Subject-term co-occurrence', na.keyword),
+          row('Country collaboration', na.country),
+          row('Institution collaboration', na.institution),
+        ]
+      );
+    const cl = na.keyword.communities.slice(0, 6);
+    if (cl.length) {
+      out +=
+        `**Table 25.** Thematic clusters of the subject-term network (greedy modularity optimisation; Q = ${na.keyword.modularity ?? 'n/a'})\n\n` +
+        mdTable(
+          ['Cluster', 'Terms', 'Members (by frequency)'],
+          cl.map((c) => [c.id, c.size, c.members.slice(0, 8).join(', ')])
+        );
+    }
+    const name = new Map(s.keywordNetwork.nodes.map((n) => [n.id, n.name]));
+    const top = [...s.keywordNetwork.edges]
+      .filter((e) => e.weight >= 2)
+      .sort((a, b) => (b.cosine || 0) - (a.cosine || 0))
+      .slice(0, 10);
+    if (top.length) {
+      out +=
+        `**Table 26.** Strongest subject-term associations by Salton cosine (co-occurrence ≥ 2)\n\n` +
+        mdTable(
+          ['Term A', 'Term B', 'Co-occurrence', 'Cosine', 'Affinity (obs/exp)'],
+          top.map((e) => [name.get(e.source) || e.source, name.get(e.target) || e.target, e.weight, e.cosine ?? '—', e.affinity ?? '—'])
+        );
+    }
+    const cn = new Map(s.countryNetwork.nodes.map((n) => [n.id, n.name]));
+    const ct = [...s.countryNetwork.edges].sort((a, b) => (b.cosine || 0) - (a.cosine || 0)).slice(0, 10);
+    if (ct.length) {
+      out +=
+        `**Table 27.** Country collaboration links normalised by Salton cosine (Glänzel, 2001) and affinity index\n\n` +
+        mdTable(
+          ['Country A', 'Country B', 'Joint works', 'Cosine', 'Affinity (obs/exp)'],
+          ct.map((e) => [cn.get(e.source) || e.source, cn.get(e.target) || e.target, e.weight, e.cosine ?? '—', e.affinity ?? '—'])
+        );
+    }
+  }
+  return out;
+};
+
+export const generateMarkdownTables = (s: StudyStats): string => baseTables(s) + advancedTables(s);
