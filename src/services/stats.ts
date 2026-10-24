@@ -14,6 +14,7 @@ import {
   LotkaFit,
   PriceShare,
   DataCoverage,
+  RetrievalReport,
 } from '../types';
 import {
   screenRecords,
@@ -271,6 +272,7 @@ export interface StatsOptions {
   /** Apply record screening (journal items, duplicates). Default true. */
   screen?: boolean;
   upstream?: { identified: number; duplicatesById: number; missingYearOrTitle: number };
+  retrieval?: RetrievalReport;
   currentYear?: number;
 }
 
@@ -809,6 +811,7 @@ export function computeStudyStats(recs: Publication[], opts: StatsOptions = {}):
     countryNetwork,
     institutionNetwork,
     screening,
+    retrieval: opts.retrieval,
     worksWithVenue: venueDocs,
     bradfordMultiplier: bradfordMult,
     css,

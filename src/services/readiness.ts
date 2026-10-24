@@ -27,8 +27,12 @@ export function assessReadiness(a: {
 
   if (s.screening?.citationSelectionFlag)
     add('blocker', 'selection', 'The sample looks selected on citation counts (almost no uncited works); citation, growth and concentration results are not population estimates. Retrieve the full result set.');
-  if ((s.origins['search'] || 0) >= settings.mx)
-    add('blocker', 'truncated', `The topic search hit its limit of ${settings.mx} records. Raise the limit or paginate before drawing conclusions.`);
+  const rt = s.retrieval;
+  const truncated = rt ? rt.subject.truncated || rt.title.truncated : (s.origins['search'] || 0) >= settings.mx;
+  if (truncated)
+    add('blocker', 'truncated', `A retrieval channel hit its limit of ${settings.mx} records. Raise the limit or paginate before drawing conclusions.`);
+  if (rt?.title.failed) add('warning', 'title-channel', `Part of the title search failed (${rt.title.failed.slice(0, 80)}); recall of works without a subject statement is reduced.`);
+  if (rt && !rt.title.ran) add('warning', 'title-channel', 'The title channel did not run (no usable query terms); works without a main-subject statement were not searched.');
   if (s.docs < 30) add('blocker', 'size', `Only ${s.docs} works: distribution tests have too little power.`);
   else if (s.docs < 100) add('warning', 'size', `Only ${s.docs} works: interpret distribution tests cautiously.`);
 

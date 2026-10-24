@@ -1,4 +1,4 @@
-import { AppSettings, Publication, StudyStats } from '../types';
+import { AppSettings, Publication, StudyStats, TermPack } from '../types';
 import { generateMarkdownTables } from './stats';
 import { Citer } from './references';
 import { compareWithLiterature } from './benchmarks';
@@ -7,6 +7,7 @@ import type { CrossrefWork } from './crossref';
 import { synthesizePrior } from './grounded';
 import type { SourceForSynthesis } from './grounded';
 import { buildFront, buildBack, renumberTables } from './paper';
+import { collectQueryTerms, buildQueryGroups, ensureMainTerms, packTerms, norm } from './terms';
 import type { PriorEntry } from './paper';
 import { assessReadiness } from './readiness';
 import {
@@ -76,59 +77,50 @@ export async function callLlm(
   throw new Error('Synthesizer mode active');
 }
 
+/**
+ * Builds the title query from ALL usable terms of the topic and its related items (every
+ * configured language, aliases, Wikipedia titles and redirects, official names, demonyms).
+ * With a local model the terms are arranged into AND-groups, but the main item's own terms can
+ * never be dropped from the first group.
+ */
 export async function formulateQueryWithLlm(
-  mainSynonyms: string[],
-  relatedByRel: Record<string, string[]>,
+  terms: TermPack[],
   settings: AppSettings,
   log: (msg: string) => void
 ): Promise<string[][]> {
-  const ascii = (x: string) =>
-    /^[\x00-\x7F]+$/.test(x) && x.length <= 40 && x.split(' ').length <= 4;
+  const sel = collectQueryTerms(terms);
+  log(`Query terms: ${sel.main.length} for the main item and ${sel.related.length} from related items (${new Set(sel.all.map(norm)).size} distinct).`);
 
-  if (settings.llmProvider === 'ollama') {
+  if (settings.llmProvider === 'ollama' && sel.all.length) {
+    const byRel: Record<string, string[]> = {};
+    terms.slice(1).forEach((t) => {
+      if (!['same as', 'narrower', 'instance', 'part', 'facet'].includes(t.rel)) return;
+      (byRel[t.rel] = byRel[t.rel] || []).push(...packTerms(t).slice(0, 4));
+    });
+    Object.keys(byRel).forEach((k) => (byRel[k] = [...new Set(byRel[k])].slice(0, 40)));
     const prompt =
-      `Topic synonyms: ${JSON.stringify(mainSynonyms)}\n` +
-      `Related ontology items: ${JSON.stringify(relatedByRel)}\n` +
-      `Build a title-keyword query for searching scholarly literature on Wikidata QLever. Return JSON {"groups":[[...],[...]]}: 1 to 3 groups; a title must match at least one term in EVERY group (AND between groups, OR within a group). Terms are short lowercase English words or phrases (3 to 15 per group).`;
-
+      `Topic names (all languages): ${JSON.stringify(sel.main.slice(0, 60))}\n` +
+      `Related ontology items: ${JSON.stringify(byRel)}\n` +
+      `Build a title-keyword query for searching scholarly literature on Wikidata QLever. Return JSON {"groups":[[...],[...]]}: 1 to 3 groups; a title must match at least one term of EVERY group. The first group must contain all names of the topic and its closest related terms; add a second group only to disambiguate an ambiguous topic. Keep every term in its original language and spelling. Return only JSON.`;
     try {
       const raw = await callLlm(prompt, true, settings, log);
       const parsed = JSON.parse(raw);
       const groups = (parsed.groups || [])
-        .map((g: any) =>
-          [].concat(g).map((x: any) => String(x).trim().toLowerCase()).filter(Boolean)
-        )
+        .map((g: any) => [].concat(g).map((x: any) => String(x).trim().toLowerCase()).filter(Boolean))
         .filter((g: any[]) => g.length > 0)
         .slice(0, 3);
-
       if (groups.length > 0) {
         log('Formulated query using local Ollama model.');
-        return groups;
+        return ensureMainTerms(groups, sel.main);
       }
     } catch (e: any) {
       log('Ollama query formulation unavailable, switching to Built-in Scholarly Synthesizer.');
     }
   }
 
-  // Built-in Scholarly Synthesizer
-  const coreMain = mainSynonyms.filter(ascii).map((x) => x.toLowerCase());
-  const instances = (relatedByRel['instance of'] || []).filter(ascii).map((x) => x.toLowerCase());
-  const subclasses = (relatedByRel['subclass of'] || []).filter(ascii).map((x) => x.toLowerCase());
-
-  const primaryTerms = [
-    ...new Set([
-      ...coreMain.slice(0, 5),
-      ...instances.slice(0, 8),
-      ...subclasses.slice(0, 4),
-    ]),
-  ].slice(0, 15);
-
   log('Formulated query groups using Built-in Scholarly Synthesizer.');
-  if (primaryTerms.length > 0) {
-    return [primaryTerms];
-  }
-
-  return [[coreMain[0] || 'research']];
+  const groups = buildQueryGroups(terms);
+  return groups.length ? groups : [[(terms[0] && packTerms(terms[0])[0]?.toLowerCase()) || 'research']];
 }
 
 export async function filterOutliersWithLlm(
