@@ -5,6 +5,7 @@ import {
   TermPack,
   Publication,
   StudyStats,
+  RetrievalReport,
   PipelineStepDef,
   StoredStudyMeta,
 } from './types';
@@ -18,6 +19,7 @@ import { ResultsView } from './components/ResultsView';
 import { StoredStudiesModal } from './components/StoredStudiesModal';
 
 import { fetchWikidataTerms } from './services/wikidata';
+import { selectRelatedIds, packTerms, relationCounts } from './services/terms';
 import {
   searchWikidataWorks,
   snowballWikidataWorks,
@@ -43,7 +45,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   ol: 'http://localhost:11434',
   md: 'llama3.1:8b',
   db: 'Wikidata (QLever)',
-  mx: 200,
+  mx: 1000,
   th: 5,
   lg: 'en,fr,ar,es,de',
   rp: '',
@@ -82,6 +84,7 @@ export const App: React.FC = () => {
   const [queryText, setQueryText] = useState('');
   const [recs, setRecs] = useState<Publication[]>([]);
   const [stats, setStats] = useState<StudyStats | null>(null);
+  const retrievalRef = useRef<RetrievalReport | undefined>(undefined);
   const flowRef = useRef<{ identified: number; duplicatesById: number; missingYearOrTitle: number } | undefined>(undefined);
   const [priorStudies, setPriorStudies] = useState<Publication[]>([]);
   const [paper, setPaper] = useState('');
@@ -154,25 +157,7 @@ export const App: React.FC = () => {
       tList = await runTermsStep();
     }
 
-    const flat = (t: TermPack) => [
-      ...new Set([...Object.values(t.labels), ...Object.values(t.aliases).flat()]),
-    ];
-    const main = flat(tList[0]).slice(0, 12);
-    const rels: Record<string, string[]> = {};
-
-    tList.slice(1).forEach((t) => {
-      if (!rels[t.rel]) rels[t.rel] = [];
-      const englishLabels = [t.labels.en, ...(t.aliases.en || []).slice(0, 2)].filter(
-        Boolean
-      );
-      rels[t.rel].push(...englishLabels);
-    });
-
-    Object.keys(rels).forEach((k) => {
-      rels[k] = [...new Set(rels[k])].slice(0, 15);
-    });
-
-    const groups = await formulateQueryWithLlm(main, rels, settings, addLog);
+    const groups = await formulateQueryWithLlm(tList, settings, addLog);
     const formattedQuery = groups.map((g) => g.join(' | ')).join('\n');
     setQueryText(formattedQuery);
     addLog(`Query groups:\n${formattedQuery}`);
@@ -185,17 +170,16 @@ export const App: React.FC = () => {
       throw new Error('Choose a Wikidata item first');
     }
     const q = currentQuery ?? queryText;
-    const relatedIds = terms.slice(1).map((t) => t.id);
+    const relatedIds = selectRelatedIds(terms);
     const endpoint = settings.qleverUrl || DEFAULT_QLEVER_ENDPOINT;
 
-    const results = await searchWikidataWorks(
-      selectedItem.id,
-      relatedIds,
-      q,
-      settings.mx,
-      endpoint,
-      addLog
-    );
+    const report = {
+      languages: settings.lg.split(',').map((x) => x.trim()).filter(Boolean),
+      mainTerms: terms[0] ? packTerms(terms[0]).length : 0,
+      relatedItems: relationCounts(terms),
+    } as RetrievalReport;
+    const results = await searchWikidataWorks(selectedItem.id, relatedIds, q, settings.mx, endpoint, addLog, { report });
+    retrievalRef.current = report;
     setRecs(results);
     return results;
   };
@@ -278,6 +262,7 @@ export const App: React.FC = () => {
     const computed = computeStudyStats(list, {
       excludeTerms: [topicLabel, ...queryTerms].filter(Boolean),
       upstream: flowRef.current,
+      retrieval: retrievalRef.current,
     });
     if (computed.screening && computed.screening.removed.length) {
       addLog(
@@ -300,7 +285,7 @@ export const App: React.FC = () => {
       throw new Error('Select a Wikidata item first');
     }
     const tList = currentTerms || terms;
-    const relatedIds = tList.slice(1).map((t) => t.id);
+    const relatedIds = selectRelatedIds(tList, 60);
     const endpoint = settings.qleverUrl || DEFAULT_QLEVER_ENDPOINT;
     const prior = await findPriorStudiesWikidata(
       selectedItem.id,

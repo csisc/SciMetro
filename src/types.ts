@@ -22,7 +22,10 @@ export interface WikidataHit {
 
 export interface TermPack {
   id: string;
+  /** main | same as | narrower | instance | part | facet | broader */
   rel: string;
+  /** number of Wikipedia sitelinks: a proxy for how established the item is (used for ranking) */
+  rank?: number;
   labels: Record<string, string>;
   aliases: Record<string, string[]>;
 }
@@ -46,6 +49,8 @@ export interface Publication {
   authors: Author[];
   keywords: string[]; // Subject keywords (wdt:P921)
   origin: 'search' | 'reference' | 'citing' | 'prior';
+  /** which retrieval channel found the work: main-subject statements, title terms, or both */
+  via?: 'subject' | 'title' | 'both';
   // Enhanced literature review attributes
   reviewType?: 'bibliometric' | 'systematic_review' | 'conceptual_survey';
   scope?: string;
@@ -253,6 +258,16 @@ export interface ScreeningReport {
   citationSelectionFlag: boolean;
 }
 
+export interface RetrievalReport {
+  languages: string[];
+  mainTerms: number;                    // distinct labels, aliases, names and redirects of the main item
+  relatedItems: Record<string, number>; // items used per relation
+  titleTerms: number;                   // terms in the title query
+  subject: { ids: number; returned: number; truncated: boolean };
+  title: { ran: boolean; returned: number; truncated: boolean; failed?: string };
+  merged: { total: number; both: number; subjectOnly: number; titleOnly: number; titleDropped: number };
+}
+
 export interface StudyStats {
   docs: number;
   span: [number, number];
@@ -283,6 +298,7 @@ export interface StudyStats {
   lotkaExponent: number;          // fitted alpha when estimable, else 2 (reference value)
   lotkaFit?: LotkaFit | null;
   screening?: ScreeningReport;
+  retrieval?: RetrievalReport;
   worksWithVenue?: number;
   bradfordMultiplier?: { k1: number | null; k2: number | null; sourcesZone: [number, number, number] };
   hFamily?: HIndexFamily;
