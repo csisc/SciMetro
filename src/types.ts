@@ -71,6 +71,8 @@ export interface NetworkEdge {
   source: string;
   target: string;
   weight: number;
+  cosine?: number;      // Salton cosine: w / sqrt(o_i * o_j)
+  affinity?: number;    // observed / expected co-occurrence (probabilistic affinity index)
 }
 
 export interface ScientometricNetwork {
@@ -163,6 +165,94 @@ export interface DataCoverage {
   missingYearDocs: number;
 }
 
+export interface CssClass {
+  label: string;
+  rule: string;
+  docs: number;
+  docsPct: number;
+  citationsPct: number;
+}
+
+export interface CharacteristicScores {
+  beta1: number;
+  beta2: number;
+  beta3: number;
+  classes: CssClass[];
+}
+
+export interface HIndexFamily {
+  h: number;
+  g: number;
+  a: number;      // mean citations of the h-core (Jin 2007)
+  r: number;      // sqrt of total citations of the h-core (Jin et al. 2007)
+  hCoreSharePct: number;
+}
+
+export interface Concentration {
+  n: number;
+  gini: number;
+  top10PctShare: number;   // share of the total held by the top 10% of units
+  top20PctShare: number;
+  top15PctShare: number;   // Seglen (1992) benchmark: 15% of articles collect ~50% of citations
+  top50PctShare: number;   // Seglen (1992) benchmark: the most cited half hold ~90%
+}
+
+export interface GrowthModels {
+  n: number;
+  exponential: { ratePct: number; ciLowPct: number; ciHighPct: number; r2Count: number; rss: number };
+  linear: { slopePerYear: number; r2Count: number; rss: number };
+  preferred: 'exponential' | 'linear';
+}
+
+export interface PeriodRow {
+  label: string;
+  docs: number;
+  sharePct: number;
+  citations: number;
+  cpp: number;                 // mean citations per paper
+  cpy: number;                 // mean citations per work per year of exposure (age-adjusted)
+  authorsPerDoc: number;
+  multiAuthorPct: number;
+  partial: boolean;
+}
+
+export interface RelativeImpactRow {
+  name: string;
+  works: number;
+  cpp: number;
+  rcr: number | null;          // >1: cited above the corpus expectation for the same years
+  top10Pct: number | null;     // % of its works in the top 10% of their year cohort
+}
+
+export interface NetworkAnalysis {
+  nodes: number;
+  edges: number;
+  density: number;
+  avgDegree: number;
+  components: number;
+  transitivity: number;
+  modularity: number | null;
+  communities: { id: number; size: number; members: string[] }[];
+  centrality: { id: string; name: string; degree: number; strength: number; betweenness: number }[];
+}
+
+export interface DiversityIndices {
+  terms: number;
+  shannon: number;
+  evenness: number;
+  simpson: number;
+  raoStirling: number;
+}
+
+export interface ScreeningReport {
+  upstream?: { identified: number; duplicatesById: number; missingYearOrTitle: number };
+  received: number;
+  removed: { reason: string; count: number; examples: string[] }[];
+  included: number;
+  uncitedPct: number | null;
+  citationSelectionFlag: boolean;
+}
+
 export interface StudyStats {
   docs: number;
   span: [number, number];
@@ -192,6 +282,28 @@ export interface StudyStats {
   lotka: LotkaRow[];
   lotkaExponent: number;          // fitted alpha when estimable, else 2 (reference value)
   lotkaFit?: LotkaFit | null;
+  screening?: ScreeningReport;
+  worksWithVenue?: number;
+  bradfordMultiplier?: { k1: number | null; k2: number | null; sourcesZone: [number, number, number] };
+  hFamily?: HIndexFamily;
+  css?: CharacteristicScores | null;
+  citationConcentration?: Concentration;
+  authorConcentration?: Concentration;
+  sourceConcentration?: Concentration;
+  growthModels?: GrowthModels | null;
+  periods?: PeriodRow[];
+  periodWidth?: number;
+  countryImpact?: RelativeImpactRow[];
+  institutionImpact?: RelativeImpactRow[];
+  venueImpact?: RelativeImpactRow[];
+  networkAnalysis?: {
+    coauthorship: NetworkAnalysis;
+    keyword: NetworkAnalysis;
+    country: NetworkAnalysis;
+    institution: NetworkAnalysis;
+  };
+  diversity?: DiversityIndices | null;
+  excludedTerms?: string[];
   priceShare?: PriceShare;
   coverage?: DataCoverage;
 

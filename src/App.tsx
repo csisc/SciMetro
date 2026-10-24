@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import {
   AppSettings,
   WikidataHit,
@@ -82,6 +82,7 @@ export const App: React.FC = () => {
   const [queryText, setQueryText] = useState('');
   const [recs, setRecs] = useState<Publication[]>([]);
   const [stats, setStats] = useState<StudyStats | null>(null);
+  const flowRef = useRef<{ identified: number; duplicatesById: number; missingYearOrTitle: number } | undefined>(undefined);
   const [priorStudies, setPriorStudies] = useState<Publication[]>([]);
   const [paper, setPaper] = useState('');
   const [logs, setLogs] = useState<string[]>([]);
@@ -233,6 +234,11 @@ export const App: React.FC = () => {
     });
     const deduped = [...uniqueMap.values()];
     const cleaned = deduped.filter((r) => r.title && r.year);
+    flowRef.current = {
+      identified: list.length,
+      duplicatesById: list.length - deduped.length,
+      missingYearOrTitle: deduped.length - cleaned.length,
+    };
     addLog(
       `Screening: ${list.length} records → ${deduped.length} after de-duplication by Wikidata ID (${list.length - deduped.length} duplicates) → ${cleaned.length} with title and publication year (${deduped.length - cleaned.length} excluded for missing year/title).`
     );
@@ -265,7 +271,22 @@ export const App: React.FC = () => {
     if (!list.length) {
       throw new Error('No publications to analyze');
     }
-    const computed = computeStudyStats(list);
+    const topicLabel = terms[0]?.labels?.en || selectedItem?.label || '';
+    const queryTerms = queryText
+      .split(/[\s,;|()"']+|\b(?:AND|OR|NOT)\b/)
+      .filter((w) => w && w.length > 2);
+    const computed = computeStudyStats(list, {
+      excludeTerms: [topicLabel, ...queryTerms].filter(Boolean),
+      upstream: flowRef.current,
+    });
+    if (computed.screening && computed.screening.removed.length) {
+      addLog(
+        `Record screening removed: ${computed.screening.removed.map((x) => `${x.count} × ${x.reason}`).join('; ')}.`
+      );
+    }
+    if (computed.screening?.citationSelectionFlag) {
+      addLog('Warning: almost no uncited works — the sample looks selected on citation counts; citation and growth indicators are not population estimates.');
+    }
     setStats(computed);
     addLog(
       `Scientometric analysis complete: ${computed.docs} works, ${computed.authors} authors, h-index ${computed.hIndex}, g-index ${computed.gIndex}, DC ${computed.degreeOfCollaboration}`
