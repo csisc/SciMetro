@@ -48,17 +48,19 @@ jobs:
       - name: Type-check
         run: npm run lint
 
+      - name: Unit tests (indicator definitions)
+        run: npm test
+
       - name: Build site
         env:
           STUDIES_DIR: studies
-          BASE_PATH: /${{ github.event.repository.name }}/
         run: |
           if [ -f scripts/build_site.py ]; then
             python3 -m pip install markdown
             python3 scripts/build_site.py
           else
-            # Fallback: plain Vite build (tsc already ran in the lint step)
-            npx vite build --base="$BASE_PATH" --outDir _site
+            # Fallback: plain Vite build (relative base, tsc already ran in the lint step)
+            npx vite build --outDir _site
             if [ -d studies ]; then cp -r studies _site/studies; fi
           fi
 
