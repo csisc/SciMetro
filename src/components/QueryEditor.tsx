@@ -15,7 +15,7 @@ export const QueryEditor: React.FC<QueryEditorProps> = ({ query, onChange }) => 
           <code className="px-1 py-0.2 rounded bg-[var(--bg)] border border-[var(--bd)] font-mono">
             |
           </code>{' '}
-          mean OR; matched against dblp titles)
+          mean OR; matched against the titles of Wikidata works. Works whose main subject is the topic or a related item are retrieved whatever their title)
         </span>
       </h2>
       <textarea

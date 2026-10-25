@@ -2,6 +2,9 @@ import React, { useState } from 'react';
 import { AppSettings } from '../types';
 import { executeQLeverOnce, DEFAULT_QLEVER_ENDPOINT } from '../services/qlever';
 import { Settings, Play, CheckCircle2, XCircle } from 'lucide-react';
+import { OllamaHelp } from './OllamaHelp';
+import { ollamaContext, originOf, probeOllama } from '../services/ollama';
+import type { OllamaDiagnosis } from '../services/ollama';
 
 interface SettingsPanelProps {
   settings: AppSettings;
@@ -11,11 +14,13 @@ interface SettingsPanelProps {
 
 export const SettingsPanel: React.FC<SettingsPanelProps> = ({ settings, onChange, onLog }) => {
   const [testing, setTesting] = useState(false);
+  const [ollamaDiag, setOllamaDiag] = useState<OllamaDiagnosis | null>(null);
   const [diagResults, setDiagResults] = useState<Record<string, { ok: boolean; msg: string }>>({});
 
   const runDiagnostics = async () => {
     setTesting(true);
     setDiagResults({});
+    setOllamaDiag(null);
     onLog(`--- connection test from ${window.location.origin} ---`);
 
     const testItem = async (
@@ -69,16 +74,13 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ settings, onChange
       return count ? `${parseInt(count, 10).toLocaleString()} scholarly articles indexed` : 'reachable';
     });
 
-    // 4. Ollama server
+    // 4. Ollama server: the probe tells apart "not running", "origin not allowed", "model missing"...
+    setOllamaDiag(null);
     await testItem('Ollama server', async () => {
-      const base = settings.ol.replace(/\/$/, '');
-      const res = await fetch(`${base}/api/tags`);
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
-      const names = (data.models || []).map((m: any) => m.name);
-      return names.includes(settings.md)
-        ? `model ${settings.md} installed`
-        : `reachable, but model "${settings.md}" not found; installed: ${names.join(', ') || 'none'}`;
+      const d = await probeOllama(ollamaContext(settings));
+      setOllamaDiag(d);
+      if (!d.ok) throw new Error(d.title);
+      return d.title;
     });
 
     setTesting(false);
@@ -243,11 +245,11 @@ export const SettingsPanel: React.FC<SettingsPanelProps> = ({ settings, onChange
           </div>
         )}
 
+        {(ollamaDiag || settings.llmProvider === 'ollama') && (
+          <OllamaHelp origin={originOf(window.location.href)} diag={ollamaDiag} />
+        )}
         <p className="text-xs text-[var(--mut)] leading-relaxed">
-          Wikidata QLever provides high-speed SPARQL access across 46M+ scholarly articles. If using local Ollama, ensure it allows this origin:{' '}
-          <code className="px-1 py-0.5 rounded bg-[var(--bg)] border border-[var(--bd)] font-mono text-[11px]">
-            OLLAMA_ORIGINS="{window.location.origin}" ollama serve
-          </code>
+          Wikidata QLever provides high-speed SPARQL access to the scholarly records in Wikidata. The built-in synthesizer works without any local model.
         </p>
       </div>
     </details>

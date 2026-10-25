@@ -1,5 +1,5 @@
 import React from 'react';
-import { Sparkles, FolderArchive, Network } from 'lucide-react';
+import { FolderArchive, Network, Quote } from 'lucide-react';
 
 interface HeaderProps {
   onOpenStoredStudies: () => void;
@@ -23,6 +23,18 @@ export const Header: React.FC<HeaderProps> = ({ onOpenStoredStudies, storedStudi
         </div>
 
         <div className="flex items-center gap-2">
+          <a
+            href="#cite-tool"
+            onClick={(e) => {
+              e.preventDefault();
+              document.getElementById('cite-tool')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }}
+            className="scimetro-btn-ghost flex items-center gap-1.5 text-xs font-medium py-1.5 px-3"
+            title="How to cite SciMetro Studio"
+          >
+            <Quote className="w-3.5 h-3.5 text-blue-600 dark:text-blue-400" />
+            <span>To Cite the Tool</span>
+          </a>
           <button
             onClick={onOpenStoredStudies}
             className="scimetro-btn-ghost flex items-center gap-1.5 text-xs font-medium py-1.5 px-3"
