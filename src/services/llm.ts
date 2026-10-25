@@ -10,6 +10,7 @@ import { buildFront, buildBack, renumberTables } from './paper';
 import { collectQueryTerms, buildQueryGroups, ensureMainTerms, packTerms, norm } from './terms';
 import type { PriorEntry } from './paper';
 import { assessReadiness } from './readiness';
+import { diagnose, diagnoseCached, loopbackInit, ollamaContext, summarize } from './ollama';
 import {
   fmt,
   lotkaSentence,
@@ -24,14 +25,21 @@ import {
   coverageTable,
 } from './narrative';
 
+class OllamaFailure extends Error {}
+
 export async function callOllama(
   prompt: string,
   asJson: boolean,
-  settings: AppSettings
+  settings: AppSettings,
+  deps: { fetchImpl?: (u: string, i?: RequestInit) => Promise<Response>; timeoutMs?: number } = {}
 ): Promise<string> {
-  const url = settings.ol.replace(/\/$/, '') + '/api/generate';
+  const base = settings.ol.replace(/\/$/, '');
+  const ctx = ollamaContext(settings);
+  const f = deps.fetchImpl ?? ((u: string, i?: RequestInit) => fetch(u, i));
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), deps.timeoutMs ?? 10 * 60 * 1000);
   try {
-    const res = await fetch(url, {
+    const res = await f(`${base}/api/generate`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -41,19 +49,28 @@ export async function callOllama(
         format: asJson ? 'json' : undefined,
         options: { temperature: 0.2, num_ctx: 8192 },
       }),
+      signal: ctl.signal,
+      ...loopbackInit(base),
     });
 
     if (!res.ok) {
       const errTxt = await res.text().catch(() => '');
-      throw new Error(`HTTP ${res.status}: ${errTxt.slice(0, 100)}`);
+      if (res.status === 403) throw new OllamaFailure(summarize(diagnose(ctx, { tags: { kind: 'http', status: 403 } })));
+      if (res.status === 404 && /not found/i.test(errTxt)) throw new OllamaFailure(`Model "${settings.md}" is not installed. Run: ollama pull ${settings.md}`);
+      throw new OllamaFailure(`Ollama answered HTTP ${res.status}: ${errTxt.slice(0, 100)}`);
     }
 
     const data = await res.json();
     return (data.response || '').trim();
   } catch (e: any) {
-    throw new Error(
-      `Cannot reach Ollama at ${settings.ol} (${e.message}). Is it running with OLLAMA_ORIGINS="${window.location.origin}"?`
-    );
+    if (e instanceof OllamaFailure) throw e;
+    if (e?.name === 'AbortError') {
+      throw new Error('Ollama did not answer in time. Check that the model is not still loading (ollama ps) or try a smaller model.');
+    }
+    // the browser reports every network-level failure as "Failed to fetch": find out which one it is
+    throw new Error(summarize(await diagnoseCached(ctx, deps.fetchImpl)));
+  } finally {
+    clearTimeout(timer);
   }
 }
 
