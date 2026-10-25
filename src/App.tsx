@@ -10,6 +10,7 @@ import {
   StoredStudyMeta,
 } from './types';
 import { Header } from './components/Header';
+import { CiteTool } from './components/CiteTool';
 import { SettingsPanel } from './components/SettingsPanel';
 import { WikidataPicker } from './components/WikidataPicker';
 import { PipelineSteps } from './components/PipelineSteps';
@@ -604,6 +605,8 @@ export const App: React.FC = () => {
           onStoreGitHub={handleStoreGitHub}
           isStoringGitHub={isStoringGitHub}
         />
+
+        <CiteTool />
       </main>
 
       <StoredStudiesModal
