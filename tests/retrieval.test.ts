@@ -148,7 +148,10 @@ test('term gathering: names, demonyms, redirects; broader items are classified b
   assert.ok(urls.some((u) => u.includes('languages=en|fr|mul')), 'mul language not requested');
   assert.ok(urls.some((u) => u.includes('sitefilter=enwiki|frwiki')), 'sitelinks not requested');
   assert.ok(logs.some((l) => /distinct names for the main item \(\d+ from Wikipedia redirects\)/.test(l)));
-  assert.ok(collectQueryTerms(terms).all.length >= 9);
+  // pruneSubsumed drops "Tunisian", "Tunisian Republic", "TunisiaFR" and "Republic of Tunisia" (all matched by "tunisia")
+  const sel = collectQueryTerms(terms);
+  assert.deepEqual(sel.main, ['Tunisia', 'Tunisie', 'Tunesia']);
+  assert.ok(sel.all.length >= 6);
 });
 
 test('term gathering degrades gracefully: ranked query -> unranked query -> search API', async () => {
@@ -192,7 +195,8 @@ test('end to end: terms -> query -> two channels -> statistics -> manuscript met
   ];
   const terms = await fetchWikidataTerms('Q948', ['en', 'fr'], () => {}, { exec: exec1, getJson });
   const groups = buildQueryGroups(terms);
-  assert.ok(groups[0].includes('tunisian') && groups[0].includes('tunisie'));
+  // "tunisian" is not listed: "tunisia" already matches it at a word boundary, so no title is lost
+  assert.ok(groups[0].includes('tunisia') && groups[0].includes('tunisie'));
   assert.ok(!groups[0].some((t) => /^item q6256/.test(t)), 'a broader class entered the query');
 
   // 2. retrieval (mock endpoint)
