@@ -83,6 +83,18 @@ export const App: React.FC = () => {
   const [selectedItem, setSelectedItem] = useState<WikidataHit | null>(null);
   const [terms, setTerms] = useState<TermPack[]>([]);
   const [queryText, setQueryText] = useState('');
+  // The pipeline steps run in one async loop, where state set by an earlier step is not yet visible
+  // to the closures of later steps. These refs always hold the latest values.
+  const termsRef = useRef<TermPack[]>([]);
+  const queryRef = useRef('');
+  const updateTerms = (t: TermPack[]) => {
+    termsRef.current = t;
+    setTerms(t);
+  };
+  const updateQuery = (q: string) => {
+    queryRef.current = q;
+    setQueryText(q);
+  };
   const [recs, setRecs] = useState<Publication[]>([]);
   const [stats, setStats] = useState<StudyStats | null>(null);
   const retrievalRef = useRef<RetrievalReport | undefined>(undefined);
@@ -147,20 +159,20 @@ export const App: React.FC = () => {
       .map((s) => s.trim())
       .filter(Boolean);
     const fetchedTerms = await fetchWikidataTerms(selectedItem.id, langs, addLog);
-    setTerms(fetchedTerms);
+    updateTerms(fetchedTerms);
     return fetchedTerms;
   };
 
   // 2. Query formulation step
   const runQueryStep = async (currentTerms?: TermPack[]): Promise<string> => {
-    let tList = currentTerms || terms;
+    let tList = currentTerms || termsRef.current;
     if (!tList.length) {
       tList = await runTermsStep();
     }
 
     const groups = await formulateQueryWithLlm(tList, settings, addLog);
     const formattedQuery = groups.map((g) => g.join(' | ')).join('\n');
-    setQueryText(formattedQuery);
+    updateQuery(formattedQuery);
     addLog(`Query groups:\n${formattedQuery}`);
     return formattedQuery;
   };
@@ -170,7 +182,8 @@ export const App: React.FC = () => {
     if (!selectedItem) {
       throw new Error('Choose a Wikidata item first');
     }
-    const q = currentQuery ?? queryText;
+    const q = currentQuery ?? queryRef.current;
+    const terms = termsRef.current;
     const relatedIds = selectRelatedIds(terms);
     const endpoint = settings.qleverUrl || DEFAULT_QLEVER_ENDPOINT;
 
@@ -204,8 +217,8 @@ export const App: React.FC = () => {
     if (!list.length) {
       throw new Error('No publications available to filter');
     }
-    const topic = terms[0]?.labels?.en || selectedItem?.label || 'Topic';
-    const filtered = await filterOutliersWithLlm(list, topic, queryText, settings, addLog);
+    const topic = termsRef.current[0]?.labels?.en || selectedItem?.label || 'Topic';
+    const filtered = await filterOutliersWithLlm(list, topic, queryRef.current, settings, addLog);
     setRecs(filtered);
     return filtered;
   };
@@ -256,8 +269,8 @@ export const App: React.FC = () => {
     if (!list.length) {
       throw new Error('No publications to analyze');
     }
-    const topicLabel = terms[0]?.labels?.en || selectedItem?.label || '';
-    const queryTerms = queryText
+    const topicLabel = termsRef.current[0]?.labels?.en || selectedItem?.label || '';
+    const queryTerms = queryRef.current
       .split(/[\s,;|()"']+|\b(?:AND|OR|NOT)\b/)
       .filter((w) => w && w.length > 2);
     const computed = computeStudyStats(list, {
@@ -285,7 +298,7 @@ export const App: React.FC = () => {
     if (!selectedItem) {
       throw new Error('Select a Wikidata item first');
     }
-    const tList = currentTerms || terms;
+    const tList = currentTerms || termsRef.current;
     const relatedIds = selectRelatedIds(tList, 60);
     const endpoint = settings.qleverUrl || DEFAULT_QLEVER_ENDPOINT;
     const prior = await findPriorStudiesWikidata(
@@ -309,8 +322,8 @@ export const App: React.FC = () => {
       throw new Error('Run statistical analysis first');
     }
     const pr = currentPrior || priorStudies;
-    const topic = terms[0]?.labels?.en || selectedItem?.label || 'Topic';
-    const q = queryText || topic;
+    const topic = termsRef.current[0]?.labels?.en || selectedItem?.label || 'Topic';
+    const q = queryRef.current || topic;
     const id = selectedItem?.id || 'Concept';
 
     const generatedMarkdown = await generatePaperWithLlm(
@@ -375,7 +388,7 @@ export const App: React.FC = () => {
           await runStatsStep();
           break;
         case 7:
-          await runPriorStep(terms);
+          await runPriorStep(termsRef.current);
           break;
         case 8:
           await runWriteStep();
@@ -400,8 +413,8 @@ export const App: React.FC = () => {
     }
 
     setIsRunningAll(true);
-    let currentTerms: TermPack[] = terms;
-    let currentQuery = queryText;
+    let currentTerms: TermPack[] = termsRef.current;
+    let currentQuery = queryRef.current;
     let currentRecs: Publication[] = recs;
     let currentStats: StudyStats | null = stats;
     let currentPrior: Publication[] = priorStudies;
@@ -541,8 +554,8 @@ export const App: React.FC = () => {
     try {
       const data = JSON.parse(study.jsonData);
       if (data.wikidata) setSelectedItem(data.wikidata);
-      if (data.query) setQueryText(data.query);
-      if (data.terms) setTerms(data.terms);
+      if (data.query) updateQuery(data.query);
+      if (data.terms) updateTerms(data.terms);
       if (data.stats) setStats(data.stats);
       if (data.previousStudies) setPriorStudies(data.previousStudies);
       if (data.works) setRecs(data.works);
@@ -576,7 +589,7 @@ export const App: React.FC = () => {
           selected={selectedItem}
           onSelect={(item) => {
             setSelectedItem(item);
-            setTerms([]);
+            updateTerms([]);
           }}
           language={settings.lg}
           onLog={addLog}
@@ -591,7 +604,7 @@ export const App: React.FC = () => {
           disabled={!selectedItem}
         />
 
-        <QueryEditor query={queryText} onChange={setQueryText} />
+        <QueryEditor query={queryText} onChange={updateQuery} />
 
         <LogConsole logs={logs} onClear={clearLogs} />
 

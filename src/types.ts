@@ -263,8 +263,9 @@ export interface RetrievalReport {
   mainTerms: number;                    // distinct labels, aliases, names and redirects of the main item
   relatedItems: Record<string, number>; // items used per relation
   titleTerms: number;                   // terms in the title query
-  subject: { ids: number; returned: number; truncated: boolean };
-  title: { ran: boolean; returned: number; truncated: boolean; failed?: string };
+  /** approximate: the exact citation-ranked query timed out, so works were selected first and ranked afterwards */
+  subject: { ids: number; returned: number; truncated: boolean; approximate?: boolean };
+  title: { ran: boolean; returned: number; truncated: boolean; failed?: string; approximate?: boolean };
   merged: { total: number; both: number; subjectOnly: number; titleOnly: number; titleDropped: number };
 }
 
