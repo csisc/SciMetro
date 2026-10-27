@@ -152,13 +152,26 @@ export function buildFront(ctx: PaperCtx): string {
   const rt = s.retrieval;
   const truncated = rt ? rt.subject.truncated || rt.title.truncated : searchN >= settings.mx;
   const relPhrase = (r: Record<string, number>) => {
-    const names: Record<string, string> = { 'same as': 'equivalent items', narrower: 'narrower classes', instance: 'instances', part: 'parts', facet: 'facets', broader: 'broader classes' };
-    return Object.entries(r).filter(([k]) => k !== 'broader').map(([k, n]) => `${n} ${names[k] || k}`).join(', ');
+    const names: Record<string, [string, string]> = {
+      'same as': ['equivalent item', 'equivalent items'],
+      narrower: ['narrower class', 'narrower classes'],
+      instance: ['instance', 'instances'],
+      part: ['part', 'parts'],
+      facet: ['facet', 'facets'],
+    };
+    return Object.entries(r)
+      .filter(([k]) => k !== 'broader')
+      .map(([k, n]) => `${n} ${(names[k] || [k, k])[n === 1 ? 0 : 1]}`)
+      .join(', ');
   };
   md += `### 3.1 Data source and retrieval\n`;
   if (rt) {
-    md += `Records were retrieved from the QLever SPARQL endpoint (${settings.qleverUrl}) on ${ctx.date} through two complementary channels, because only a minority of Wikidata scholarly works carry a main-subject statement. The **subject channel** returns works whose main subject (\`wdt:P921\`) is the topic (${ctx.selectedId}) or one of ${rt.subject.ids - 1} related items (${relPhrase(rt.relatedItems)}), ranked by the number of Wikipedia articles and capped per relation; broader classes of the topic are deliberately not searched, since they would add works about the general class. The **title channel** returns scholarly works (articles, reviews, preprints, conference papers, theses and chapters) whose title contains one of ${rt.titleTerms} terms: names of the topic and of the related items in ${rt.languages.length} languages (${rt.languages.join(', ')}) taken from labels, aliases, Wikipedia article titles and redirects, official names and demonyms (${rt.mainTerms} distinct names for the topic itself). Terms shorter than four letters are not used, accent-stripped spellings are searched as well, and title-only hits must match a term at word boundaries (so that, for example, "Oman" does not match "woman"). The query is \`${ctx.queryText.replace(/\n/g, ' AND ')}\` (terms within a group are alternatives; groups are combined with AND). Journal and periodical items were excluded by type.\n\n`;
+    md += `Records were retrieved from the QLever SPARQL endpoint (${settings.qleverUrl}) on ${ctx.date} through two complementary channels, because only a minority of Wikidata scholarly works carry a main-subject statement. The **subject channel** returns works whose main subject (\`wdt:P921\`) is the topic (${ctx.selectedId}) or ${rt.subject.ids - 1 === 1 ? 'one related item' : `one of ${rt.subject.ids - 1} related items`} (${relPhrase(rt.relatedItems)}), ranked by the number of Wikipedia articles and capped per relation; broader classes of the topic are deliberately not searched, since they would add works about the general class. The **title channel** returns scholarly works (articles, reviews, preprints, conference papers, theses and chapters) whose title contains one of ${rt.titleTerms} terms: names of the topic and of the related items in ${rt.languages.length} languages (${rt.languages.join(', ')}) taken from labels, aliases, Wikipedia article titles and redirects, official names and demonyms (${rt.mainTerms} distinct names for the topic itself). Terms shorter than four letters are not used, accent-stripped spellings are searched as well, and title-only hits must match a term at word boundaries (so that, for example, "Oman" does not match "woman"). The query is \`${ctx.queryText.replace(/\n/g, ' AND ')}\` (terms within a group are alternatives; groups are combined with AND). Journal and periodical items were excluded by type.\n\n`;
     md += `The subject channel returned ${rt.subject.returned} works and the title channel ${rt.title.returned}; after merging, the corpus holds ${rt.merged.total} distinct works (${rt.merged.subjectOnly} found by subject only, ${rt.merged.titleOnly} by title only, ${rt.merged.both} by both; ${rt.merged.titleDropped} title hits were discarded by the word-boundary check). `;
+    const approx = [rt.subject.approximate && 'subject', rt.title.approximate && 'title'].filter(Boolean) as string[];
+    if (approx.length) {
+      md += `For the ${approx.join(' and ')} channel${approx.length > 1 ? 's' : ''}, the exact citation-ranked query exceeded the endpoint's time limit, so works were first selected without ranking (a limited number of matches, in index order) and then ranked by citations; the retained works are therefore the most cited among the matches examined, not among all matches. `;
+    }
   } else {
     md += `Records were retrieved from the QLever SPARQL endpoint (${settings.qleverUrl}) on ${ctx.date}. The target concept (${ctx.selectedId}) and related Wikidata items were used as main-subject values (\`wdt:P921\`), combined with a title filter: \`${ctx.queryText.replace(/\n/g, ' AND ')}\` (terms within a group are alternatives; groups are combined with AND). Journal and periodical items were excluded by type. `;
   }

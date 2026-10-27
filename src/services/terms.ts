@@ -44,6 +44,7 @@ export function isUsableTerm(t: string, minLen = 4): boolean {
   if (!n || n.length > 80 || n.split(' ').length > 8) return false;
   if (/^[\d\s.,-]+$/.test(n)) return false;
   if (GENERIC.has(n)) return false;
+  if (/\.$/.test(n)) return false; // abbreviations such as "tun."
   return CJK.test(n) ? n.length >= 2 : n.length >= minLen;
 }
 
@@ -84,6 +85,21 @@ export interface TermSelection {
   all: string[];
 }
 
+/**
+ * Removes terms that a shorter term of the list already matches. In an OR-group a title that
+ * matches "history of tunisia" also matches "tunisia", so the longer term adds nothing but cost.
+ * "Matches" is the same word-boundary rule used to check titles, so no title is lost.
+ */
+export function pruneSubsumed(terms: string[]): string[] {
+  const items = terms.map((t, i) => ({ t, i, n: norm(t) }));
+  const kept: typeof items = [];
+  [...items].sort((a, b) => a.n.length - b.n.length || a.i - b.i).forEach((it) => {
+    if (!kept.some((k) => k.n !== it.n && matchesTerm(it.t, k.t))) kept.push(it);
+  });
+  const keep = new Set(kept.map((k) => k.i));
+  return items.filter((it) => keep.has(it.i)).map((it) => it.t);
+}
+
 /** All usable terms: the main item first, then the related items in priority and rank order. */
 export function collectQueryTerms(terms: TermPack[], opts: { minLen?: number; maxTerms?: number } = {}): TermSelection {
   const { minLen = 4, maxTerms = 150 } = opts;
@@ -99,18 +115,18 @@ export function collectQueryTerms(terms: TermPack[], opts: { minLen?: number; ma
     }
     return out;
   };
-  const main = take(packTerms(terms[0])).slice(0, 80);
+  const mainAll = take(packTerms(terms[0]));
   const ranked = terms
     .slice(1)
     .filter((t) => (SEARCHED_RELATIONS as readonly string[]).includes(t.rel))
     .sort((a, b) => (WEIGHT[b.rel] || 0) - (WEIGHT[a.rel] || 0) || (b.rank || 0) - (a.rank || 0));
-  const related: string[] = [];
-  for (const p of ranked) {
-    for (const t of take(packTerms(p))) {
-      if (main.length + related.length >= maxTerms) break;
-      related.push(t);
-    }
-  }
+  const relAll: string[] = [];
+  ranked.forEach((p) => relAll.push(...take(packTerms(p))));
+
+  // prune first, cap afterwards: the cap then keeps distinct terms instead of redundant phrases
+  const keep = new Set(pruneSubsumed([...mainAll, ...relAll]).map(norm));
+  const main = mainAll.filter((t) => keep.has(norm(t))).slice(0, 80);
+  const related = relAll.filter((t) => keep.has(norm(t))).slice(0, Math.max(0, maxTerms - main.length));
   return { main, related, all: [...main, ...related] };
 }
 
@@ -149,8 +165,11 @@ export function matchesTerm(title: string, term: string): boolean {
     const before = t[i - 1];
     const after = t.slice(i + q.length);
     const startOk = !isLetterOrDigit(before);
-    const m = after.match(/^\p{L}*/u)![0];
-    const endOk = !isLetterOrDigit(after[0]) || (q.length >= 6 && m.length <= 3);
+    // a short run of letters (plural, demonym) may follow, but it must end at a word boundary:
+    // "tunisia" matches "tunisian", "gadget 1" does not match "gadget 10" or "gadget1a"
+    const suffix = after.match(/^\p{L}*/u)![0];
+    const endOk =
+      !isLetterOrDigit(after[0]) || (q.length >= 6 && suffix.length > 0 && suffix.length <= 3 && !isLetterOrDigit(after[suffix.length]));
     if (startOk && endOk) return true;
     from = i + 1;
   }

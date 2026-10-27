@@ -31,6 +31,8 @@ export function assessReadiness(a: {
   const truncated = rt ? rt.subject.truncated || rt.title.truncated : (s.origins['search'] || 0) >= settings.mx;
   if (truncated)
     add('blocker', 'truncated', `A retrieval channel hit its limit of ${settings.mx} records. Raise the limit or paginate before drawing conclusions.`);
+  if (rt && (rt.subject.approximate || rt.title.approximate))
+    add('warning', 'approximate', 'The exact citation-ranked query timed out, so the retained works are the most cited among the first matches only. Narrow the topic or split the query to retrieve the whole result set.');
   if (rt?.title.failed) add('warning', 'title-channel', `Part of the title search failed (${rt.title.failed.slice(0, 80)}); recall of works without a subject statement is reduced.`);
   if (rt && !rt.title.ran) add('warning', 'title-channel', 'The title channel did not run (no usable query terms); works without a main-subject statement were not searched.');
   if (s.docs < 30) add('blocker', 'size', `Only ${s.docs} works: distribution tests have too little power.`);

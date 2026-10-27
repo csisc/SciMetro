@@ -9,6 +9,7 @@ PREFIX wd: <http://www.wikidata.org/entity/>
 PREFIX wdt: <http://www.wikidata.org/prop/direct/>
 PREFIX rdfs: <http://www.w3.org/2000/01/rdf-schema#>
 PREFIX xsd: <http://www.w3.org/2001/XMLSchema#>
+PREFIX wikibase: <http://wikiba.se/ontology#>
 `;
 
 const E = encodeURIComponent;
@@ -49,24 +50,42 @@ const filterOf = (g: string[][]) =>
     )
     .join(' && ');
 
+/** A query that exceeded the server's time limit: retrying the same query cannot succeed. */
+export class QLeverTimeoutError extends Error {
+  timeout = true;
+}
+
+export const isTimeoutError = (e: any): boolean =>
+  !!e && (e.timeout === true || e.name === 'AbortError' || /timed out|time limit|timeout/i.test(String(e.message || '')));
+
+// QLever reports a timeout as HTTP 429 ("Operation timed out"), the same status as rate limiting.
+const LONG_QUERY = 6000; // longer encoded queries are sent by POST (proxies reject very long URLs)
+
 export async function executeQLeverOnce(
   sparqlQuery: string,
   endpoint = DEFAULT_QLEVER_ENDPOINT
 ): Promise<Record<string, string>[]> {
   const ctl = new AbortController();
   const t = setTimeout(() => ctl.abort(), 90000);
-  const H = { Accept: 'application/sparql-results+json' };
   const fullQuery = PREFIXES + sparqlQuery;
+  const encoded = E(fullQuery);
 
   try {
-    const res = await fetch(endpoint + '?query=' + E(fullQuery), {
-      headers: H,
-      signal: ctl.signal,
-    });
+    const res =
+      encoded.length > LONG_QUERY
+        ? await fetch(endpoint, {
+            method: 'POST',
+            headers: { Accept: 'application/sparql-results+json', 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: 'query=' + encoded, // a "simple" request: no CORS preflight
+            signal: ctl.signal,
+          })
+        : await fetch(endpoint + '?query=' + encoded, { headers: { Accept: 'application/sparql-results+json' }, signal: ctl.signal });
 
     if (!res.ok) {
       const errText = await res.text().catch(() => '');
-      throw new Error(`HTTP ${res.status}: ${errText.slice(0, 200)}`);
+      const msg = `HTTP ${res.status}: ${errText.slice(0, 200)}`;
+      if (/timed out|time limit/i.test(errText)) throw new QLeverTimeoutError(`Query exceeded the server time limit (${msg.slice(0, 80)})`);
+      throw new Error(msg);
     }
 
     const data = await res.json();
@@ -90,24 +109,23 @@ export async function executeQLever(
       return rows;
     } catch (e: any) {
       lastError = e;
+      if (isTimeoutError(e)) break; // the same query would time out again
       if (e.message && /HTTP 429/.test(e.message)) {
-        // Rate limited by QLever nginx: exponential backoff
+        // genuine rate limiting by the server proxy: exponential backoff
         await sleep(2500 * (i + 1));
         continue;
       }
-      if (!(e instanceof TypeError) && e.name !== 'AbortError') {
+      if (!(e instanceof TypeError)) {
         if (e.message && /HTTP 4\d\d/.test(e.message)) break;
       }
       await sleep(1500 * (i + 1));
     }
   }
 
-  const isTimeout = lastError?.name === 'AbortError';
-  throw new Error(
-    `Wikidata QLever: ${
-      isTimeout ? 'Query timed out after 90 s.' : lastError?.message || 'Request failed'
-    }`
-  );
+  if (isTimeoutError(lastError)) {
+    throw new QLeverTimeoutError('Wikidata QLever: the query exceeded the server time limit.');
+  }
+  throw new Error(`Wikidata QLever: ${lastError?.message || 'Request failed'}`);
 }
 
 const getQid = (uri: string): string => {
@@ -152,6 +170,15 @@ export function chunkTitleGroups(groups: string[][], size = 50, maxChunks = 3): 
   return pieces.map((piece) => usable.map((g, i) => (i === big ? piece : g.slice(0, size))));
 }
 
+/** Splits the largest group of terms in two, or returns null if it is already small. */
+export function splitGroups(groups: string[][], minSize = 8): string[][][] | null {
+  const big = groups.reduce((bi, g, i) => (g.length > groups[bi].length ? i : bi), 0);
+  if (!groups.length || groups[big].length <= minSize) return null;
+  const half = Math.ceil(groups[big].length / 2);
+  const make = (part: string[]) => groups.map((g, i) => (i === big ? part : g));
+  return [make(groups[big].slice(0, half)), make(groups[big].slice(half))];
+}
+
 export async function searchWikidataWorks(
   conceptId: string,
   relatedConceptIds: string[],
@@ -165,6 +192,7 @@ export async function searchWikidataWorks(
   const groups = parseQueryGroups(queryText);
   const titleChunks = chunkTitleGroups(groups);
   const usableGroups = titleChunks.length ? titleChunks[0].map((_, gi) => [...new Set(titleChunks.flatMap((c) => c[gi]))]) : [];
+  const stage1Limit = Math.min(20000, Math.max(4 * maxResults, 3000));
 
   const toPub = (r: Record<string, string>, via: 'subject' | 'title'): Publication => {
     const qid = getQid(r.work);
@@ -184,12 +212,38 @@ export async function searchWikidataWorks(
     };
   };
 
+  // Stage 2 of the fallback: metadata and citation counts for works already selected (cheap, indexed).
+  const fetchCore = async (workUris: string[]): Promise<Record<string, string>[]> => {
+    const ids = [...new Set(workUris.map(getQid))];
+    const rows: Record<string, string>[] = [];
+    for (const b of chunk(ids, 300)) {
+      rows.push(
+        ...(await exec(
+          `# stage:core
+SELECT ?work ?title ?year ?venueLabel ?doi (COUNT(?citing) AS ?cites) WHERE {
+  VALUES ?work { ${b.map((id) => `wd:${id}`).join(' ')} }
+  OPTIONAL { ?work wdt:P1476 ?title }${TAIL}
+}
+GROUP BY ?work ?title ?year ?venueLabel ?doi
+`,
+          endpoint
+        ))
+      );
+    }
+    const seen = new Set<string>();
+    return rows
+      .filter((r) => (seen.has(r.work) ? false : (seen.add(r.work), true)))
+      .sort((a, b) => (parseInt(b.cites, 10) || 0) - (parseInt(a.cites, 10) || 0))
+      .slice(0, maxResults);
+  };
+
   // ---- Channel A: works whose main subject (P921) is the topic or one of its related items -------
   const ids = [...new Set([conceptId, ...relatedConceptIds])].slice(0, 201);
+  const concepts = ids.map((id) => `wd:${id}`).join(' ');
   log(`Subject channel: works about ${ids.length} Wikidata items (the topic and ${ids.length - 1} related items)…`);
-  const subjectSparql = `
+  const subjectExact = (vals: string) => `
 SELECT ?work ?title ?year ?venueLabel ?doi (COUNT(?citing) AS ?cites) WHERE {
-  VALUES ?concept { ${ids.map((id) => `wd:${id}`).join(' ')} }
+  VALUES ?concept { ${vals} }
   ?work wdt:P921 ?concept .
   OPTIONAL { ?work wdt:P1476 ?title }${TAIL}
   FILTER NOT EXISTS { VALUES ?excludedType { ${EXCLUDED_TYPES} } ?work wdt:P31 ?excludedType }
@@ -200,40 +254,47 @@ LIMIT ${maxResults}
 `;
   let subjectRows: Record<string, string>[] = [];
   let subjectError = '';
+  let subjectApprox = false;
+  let subjectCapped = false;
   try {
-    subjectRows = await exec(subjectSparql, endpoint);
+    subjectRows = await exec(subjectExact(concepts), endpoint);
   } catch (err: any) {
-    subjectError = err.message;
-    log(`Subject channel note: ${err.message}. Retrying with the topic item alone…`);
-    try {
-      subjectRows = await exec(
-        `
-SELECT ?work ?title ?year ?venueLabel ?doi (COUNT(?citing) AS ?cites) WHERE {
-  ?work wdt:P921 wd:${conceptId} .
-  OPTIONAL { ?work wdt:P1476 ?title }${TAIL}
+    if (isTimeoutError(err)) {
+      log('Subject channel: the ranked query exceeded the time limit; selecting works first, then ranking them by citations…');
+      try {
+        const sel = await exec(
+          `# stage:select
+SELECT DISTINCT ?work WHERE {
+  VALUES ?concept { ${concepts} }
+  ?work wdt:P921 ?concept .
+  FILTER NOT EXISTS { VALUES ?excludedType { ${EXCLUDED_TYPES} } ?work wdt:P31 ?excludedType }
 }
-GROUP BY ?work ?title ?year ?venueLabel ?doi
-ORDER BY DESC(?cites)
-LIMIT ${maxResults}
+LIMIT ${stage1Limit}
 `,
-        endpoint
-      );
-      subjectError = '';
-    } catch (err2: any) {
-      log(`Subject channel failed: ${err2.message}`);
+          endpoint
+        );
+        subjectCapped = sel.length >= stage1Limit;
+        subjectRows = await fetchCore(sel.map((r) => r.work));
+        subjectApprox = true;
+      } catch (err2: any) {
+        subjectError = err2.message;
+        log(`Subject channel failed: ${err2.message}`);
+      }
+    } else {
+      subjectError = err.message;
+      log(`Subject channel note: ${err.message}. Retrying with the topic item alone…`);
+      try {
+        subjectRows = await exec(subjectExact(`wd:${conceptId}`), endpoint);
+        subjectError = '';
+      } catch (err2: any) {
+        log(`Subject channel failed: ${err2.message}`);
+      }
     }
   }
-  log(`Subject channel: ${subjectRows.length} works`);
+  log(`Subject channel: ${subjectRows.length} works${subjectApprox ? ' (ranked within the first matches)' : ''}`);
 
   // ---- Channel B: works whose title contains a term (most works have no subject statement) -------
-  let titleRows: Record<string, string>[] = [];
-  let titleError = '';
-  let titleTruncated = false;
-  if (titleChunks.length) {
-    const nTerms = new Set(titleChunks.flatMap((c) => c.flat())).size;
-    log(`Title channel: ${nTerms} terms in ${titleChunks.length} query${titleChunks.length > 1 ? ' chunks' : ''}…`);
-    for (const [ci, ch] of titleChunks.entries()) {
-      const sparql = `
+  const titleExact = (ch: string[][]) => `
 SELECT ?work ?title ?year ?venueLabel ?doi (COUNT(?citing) AS ?cites) WHERE {
   VALUES ?workType { ${WORK_TYPES} }
   ?work wdt:P31 ?workType ;
@@ -244,9 +305,56 @@ GROUP BY ?work ?title ?year ?venueLabel ?doi
 ORDER BY DESC(?cites)
 LIMIT ${maxResults}
 `;
+  const titleSelect = (ch: string[][]) => `# stage:select
+SELECT DISTINCT ?work ?title WHERE {
+  VALUES ?workType { ${WORK_TYPES} }
+  ?work wdt:P31 ?workType ;
+        wdt:P1476 ?title .
+  FILTER(${filterOf(ch)})
+}
+LIMIT ${stage1Limit}
+`;
+
+  let titleError = '';
+  let titleTruncated = false;
+  let titleApprox = false;
+  const titleRows: Record<string, string>[] = [];
+
+  /** exact ranked query; on a timeout the two-stage fallback; if that times out too, halve the terms */
+  const titleChunkRows = async (ch: string[][]): Promise<Record<string, string>[]> => {
+    try {
+      const rows = await exec(titleExact(ch), endpoint);
+      if (rows.length >= maxResults) titleTruncated = true;
+      return rows;
+    } catch (err: any) {
+      if (!isTimeoutError(err)) throw err;
+      log('Title channel: the ranked query exceeded the time limit; selecting works first, then ranking them by citations…');
       try {
-        const rows = await exec(sparql, endpoint);
-        if (rows.length >= maxResults) titleTruncated = true;
+        const sel = await exec(titleSelect(ch), endpoint);
+        if (sel.length >= stage1Limit) titleTruncated = true;
+        const titles = new Map(sel.map((r) => [getQid(r.work), r.title]));
+        const core = await fetchCore(sel.map((r) => r.work));
+        titleApprox = true;
+        return core.map((r) => ({ ...r, title: r.title || titles.get(getQid(r.work)) || '' }));
+      } catch (err2: any) {
+        if (!isTimeoutError(err2)) throw err2;
+        const halves = splitGroups(ch);
+        if (!halves) throw err2;
+        log(`Title channel: still too slow with ${ch.reduce((a, g) => Math.max(a, g.length), 0)} terms; splitting the term list in two…`);
+        titleApprox = true;
+        const out: Record<string, string>[] = [];
+        for (const h of halves) out.push(...(await titleChunkRows(h)));
+        return out;
+      }
+    }
+  };
+
+  if (titleChunks.length) {
+    const nTerms = new Set(titleChunks.flatMap((c) => c.flat())).size;
+    log(`Title channel: ${nTerms} terms in ${titleChunks.length} query${titleChunks.length > 1 ? ' chunks' : ''}…`);
+    for (const [ci, ch] of titleChunks.entries()) {
+      try {
+        const rows = await titleChunkRows(ch);
         titleRows.push(...rows);
         log(`Title channel chunk ${ci + 1}/${titleChunks.length}: ${rows.length} works`);
       } catch (err: any) {
@@ -285,14 +393,15 @@ LIMIT ${maxResults}
   const subjectOnly = publications.filter((p) => p.via === 'subject').length;
   const titleOnly = publications.filter((p) => p.via === 'title').length;
   log(`Retrieval: ${publications.length} distinct works (${subjectOnly} by subject only, ${titleOnly} by title only, ${both} by both; ${titleDropped} title hits discarded by the word-boundary check).`);
-  if (subjectRows.length >= maxResults || titleTruncated) {
-    log(`Warning: a channel reached the limit of ${maxResults} results and is ordered by citation count; raise the limit to avoid a citation-selected sample.`);
+  const subjectTruncated = subjectRows.length >= maxResults || subjectCapped;
+  if (subjectTruncated || titleTruncated) {
+    log(`Warning: a channel reached its limit and is ordered by citation count${subjectApprox || titleApprox ? ' (only within the first matches found)' : ''}; raise the limit or narrow the topic to avoid a citation-selected sample.`);
   }
 
   if (opts.report) {
     Object.assign(opts.report, {
-      subject: { ids: ids.length, returned: subjectRows.length, truncated: subjectRows.length >= maxResults },
-      title: { ran: titleChunks.length > 0, returned: titleRows.length, truncated: titleTruncated, failed: titleError || undefined },
+      subject: { ids: ids.length, returned: subjectRows.length, truncated: subjectTruncated, approximate: subjectApprox || undefined },
+      title: { ran: titleChunks.length > 0, returned: titleRows.length, truncated: titleTruncated, failed: titleError || undefined, approximate: titleApprox || undefined },
       merged: { total: publications.length, both, subjectOnly, titleOnly, titleDropped },
       titleTerms: new Set(titleChunks.flatMap((c) => c.flat())).size,
     });
