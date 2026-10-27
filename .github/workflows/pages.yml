@@ -8,6 +8,7 @@ on:
       - src/**
       - studies/**
       - scripts/**
+      - tests/**
       - package.json
       - package-lock.json
       - bun.lock
@@ -35,7 +36,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: npm
           cache-dependency-path: |
             package-lock.json
@@ -43,7 +44,7 @@ jobs:
 
       - name: Install Node dependencies
         run: |
-          if [ -f package-lock.json ]; then npm ci; else npm install; fi
+          if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
 
       - name: Type-check
         run: npm run lint
@@ -65,7 +66,9 @@ jobs:
           fi
 
       - name: Verify build output
-        run: test -f _site/index.html
+        run: |
+          test -f _site/index.html
+          grep -q 'src="\./' _site/index.html  # relative asset URLs (project-site safe)
 
       - uses: actions/configure-pages@v5
 
