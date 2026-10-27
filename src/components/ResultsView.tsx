@@ -70,6 +70,9 @@ export const ResultsView: React.FC<ResultsViewProps> = ({
   const [copied, setCopied] = useState(false);
   const [reviewFilter, setReviewFilter] = useState<'all' | 'bibliometric' | 'systematic_review' | 'conceptual_survey'>('all');
   const [reviewSearch, setReviewSearch] = useState('');
+  // Hooks must run in the same order on every render, so this stays above the early return below.
+  // Diagram of each figure, taken from the fence that follows its own caption.
+  const diagrams = React.useMemo(() => figureDiagrams(paperMarkdown), [paperMarkdown]);
 
   if (!stats && !paperMarkdown) {
     return null;
@@ -100,8 +103,6 @@ export const ResultsView: React.FC<ResultsViewProps> = ({
     }
   };
 
-  // Diagram of each figure, taken from the fence that follows its own caption
-  const diagrams = React.useMemo(() => figureDiagrams(paperMarkdown), [paperMarkdown]);
 
   return (
     <section className="scimetro-card mb-6" id="out">
