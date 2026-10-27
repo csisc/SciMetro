@@ -22,7 +22,7 @@ export interface WikidataHit {
 
 export interface TermPack {
   id: string;
-  /** main | same as | narrower | instance | part | facet | broader */
+  /** main | narrower | instance | part | facet | broader */
   rel: string;
   /** number of Wikipedia sitelinks: a proxy for how established the item is (used for ranking) */
   rank?: number;
