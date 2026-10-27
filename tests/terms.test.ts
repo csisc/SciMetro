@@ -35,10 +35,11 @@ test('related ids: broader items are never searched; ranked by sitelinks within 
     pack('Q20', 'narrower', 'Tunis', [], 50),
     pack('Q21', 'narrower', 'Sfax', [], 200),
     pack('Q30', 'instance', 'Tunisian city', [], 5),
-    pack('Q40', 'same as', 'Ifriqiya', [], 1),
+    pack('Q40', 'same as', 'Ifriqiya', [], 1), // equivalents are not used
+    pack('Q41', 'part', 'Tunisian region', [], 1),
   ];
-  assert.deepEqual(selectRelatedIds(terms), ['Q40', 'Q21', 'Q20', 'Q30']);
-  assert.deepEqual(selectRelatedIds(terms, 2), ['Q40', 'Q21']);
+  assert.deepEqual(selectRelatedIds(terms), ['Q21', 'Q20', 'Q30', 'Q41']);
+  assert.deepEqual(selectRelatedIds(terms, 2), ['Q21', 'Q20']);
 });
 
 test('related ids respect per-relation caps (80 narrower)', () => {
@@ -138,8 +139,8 @@ test('ontology rows: best relation wins, ranked by sitelinks, capped; self and i
     { item: 'http://www.wikidata.org/entity/Q8', rel: 'same as' },
   ];
   const out = classifyOntologyRows(rows, 'Q1');
-  assert.deepEqual(out.map((x) => `${x.id}:${x.rel}`), ['Q8:same as', 'Q5:narrower', 'Q7:narrower', 'Q6:narrower']);
+  assert.deepEqual(out.map((x) => `${x.id}:${x.rel}`), ['Q5:narrower', 'Q7:narrower', 'Q6:narrower']);
   const many = Array.from({ length: 200 }, (_, i) => ({ item: 'http://www.wikidata.org/entity/Q' + (100 + i), rel: 'broader', sl: String(i) }));
   assert.equal(classifyOntologyRows(many, 'Q1').length, 15);
-  assert.deepEqual(relationCounts([pack('Q1', 'main', 'x'), ...out.map((x) => pack(x.id, x.rel, 'y'))]), { 'same as': 1, narrower: 3 });
+  assert.deepEqual(relationCounts([pack('Q1', 'main', 'x'), ...out.map((x) => pack(x.id, x.rel, 'y'))]), { narrower: 3 });
 });
