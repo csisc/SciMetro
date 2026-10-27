@@ -66,7 +66,7 @@ OLLAMA_ORIGINS="https://<user>.github.io" ollama serve
 
 ## Tests
 
-`npm test` runs the unit, rendering and deployment tests. `npm run test:browser` additionally drives a real browser engine (WebKitGTK; needs `apt install webkit2gtk-driver xvfb` and `pip install selenium`) against mock Ollama servers and the production build, and saves screenshots.
+`npm test` runs the unit, rendering and deployment tests. `npm run test:browser` additionally drives a real browser engine (WebKitGTK; needs `apt install webkit2gtk-driver xvfb` and `pip install selenium`): the production build under a sub-path, mock Ollama servers with real CORS behaviour, and the whole application through **Run all** against a fake network that is as strict as QLever (it rejects undeclared prefixes and answers heavy queries with HTTP 429 "Operation timed out"). Screenshots and the pipeline log are saved.
 
 ## To Cite the Tool
 
