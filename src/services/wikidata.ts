@@ -72,7 +72,7 @@ const WIKI_SPECIAL_RELATIONS: Record<string, { id: string; rel: string }[]> = {
 /**
  * Ontology of the topic, ranked by the number of Wikipedia sitelinks. Relations:
  *  narrower = subclasses (two levels), instance = instances, part = parts, facet = facets,
- *  same as = equivalent items, broader = more general items (displayed, never searched).
+ *  broader = more general items (displayed, never searched). Equivalent items are not used.
  */
 const ontologySparql = (id: string) => `
 SELECT DISTINCT ?item ?rel ?sl WHERE {
@@ -83,8 +83,6 @@ SELECT DISTINCT ?item ?rel ?sl WHERE {
     UNION { ?item wdt:P361 wd:${id} . BIND('part' AS ?rel) }
     UNION { wd:${id} wdt:P527 ?item . BIND('part' AS ?rel) }
     UNION { ?item wdt:P1269 wd:${id} . BIND('facet' AS ?rel) }
-    UNION { wd:${id} wdt:P460 ?item . BIND('same as' AS ?rel) }
-    UNION { ?item wdt:P460 wd:${id} . BIND('same as' AS ?rel) }
     UNION { wd:${id} wdt:P279 ?item . BIND('broader' AS ?rel) }
     UNION { wd:${id} wdt:P31 ?item . BIND('broader' AS ?rel) }
     UNION { wd:${id} wdt:P361 ?item . BIND('broader' AS ?rel) }
@@ -176,11 +174,10 @@ export async function fetchWikidataTerms(
     });
   ['P31', 'P279', 'P361', 'P1269'].forEach((p) => seed(p, 'broader'));
   seed('P527', 'part');
-  seed('P460', 'same as');
   (WIKI_SPECIAL_RELATIONS[selectedId] || []).forEach((x) => rows.push({ item: x.id, rel: x.rel }));
 
-  // 2. ranked ontology (narrower, instances, parts, facets, equivalents, broader)
-  log(`Querying ontology of ${selectedId}: narrower terms, instances, parts, facets, equivalents…`);
+  // 2. ranked ontology (narrower, instances, parts, facets, broader)
+  log(`Querying ontology of ${selectedId}: subclasses, instances, parts, facets…`);
   try {
     (await exec(ontologySparql(selectedId))).forEach((x) => rows.push(x));
   } catch (err: any) {
@@ -222,7 +219,7 @@ export async function fetchWikidataTerms(
   }
 
   // 4. Wikipedia redirects of the main item and of the best-known searched related items
-  const focus = termsList.filter((t, i) => i === 0 || ['same as', 'narrower'].includes(t.rel)).slice(0, 9);
+  const focus = termsList.filter((t, i) => i === 0 || t.rel === 'narrower').slice(0, 9);
   const byLang: Record<string, string[]> = {};
   focus.forEach((t) => Object.entries(titles[t.id] || {}).forEach(([l, ti]) => (byLang[l] = [...(byLang[l] || []), ti])));
   const redirects = await fetchWikipediaRedirects(byLang, getJson, log);

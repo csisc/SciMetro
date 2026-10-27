@@ -111,7 +111,7 @@ export async function formulateQueryWithLlm(
   if (settings.llmProvider === 'ollama' && sel.all.length) {
     const byRel: Record<string, string[]> = {};
     terms.slice(1).forEach((t) => {
-      if (!['same as', 'narrower', 'instance', 'part', 'facet'].includes(t.rel)) return;
+      if (!['narrower', 'instance', 'part', 'facet'].includes(t.rel)) return;
       (byRel[t.rel] = byRel[t.rel] || []).push(...packTerms(t).slice(0, 4));
     });
     Object.keys(byRel).forEach((k) => (byRel[k] = [...new Set(byRel[k])].slice(0, 40)));

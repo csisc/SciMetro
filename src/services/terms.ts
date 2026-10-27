@@ -8,19 +8,21 @@
  */
 import type { TermPack } from '../types';
 
-/** Relations whose items are searched for (narrower or equivalent meaning). */
-export const SEARCHED_RELATIONS = ['same as', 'narrower', 'instance', 'part', 'facet'] as const;
+/**
+ * Relations whose items are used to augment the search: subclasses of (narrower), instances of,
+ * parts of and facets of the selected item. Nothing else (no equivalents, no broader items).
+ */
+export const SEARCHED_RELATIONS = ['narrower', 'instance', 'part', 'facet'] as const;
 /** Per-relation caps on how many related items are kept, in priority order. */
 export const RELATION_CAPS: Record<string, number> = {
-  'same as': 10,
   narrower: 80,
   instance: 40,
   part: 30,
   facet: 20,
   broader: 15, // kept for display and context only, never searched
 };
-const PRIORITY = ['same as', 'narrower', 'instance', 'part', 'facet', 'broader'];
-const WEIGHT: Record<string, number> = { main: 100, 'same as': 80, narrower: 60, instance: 50, part: 40, facet: 40 };
+const PRIORITY = ['narrower', 'instance', 'part', 'facet', 'broader'];
+const WEIGHT: Record<string, number> = { main: 100, narrower: 60, instance: 50, part: 40, facet: 40 };
 
 const CJK = /[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]/;
 
@@ -271,6 +273,7 @@ export function classifyOntologyRows(
     const id = (r.item || '').split('/').pop() || '';
     if (!/^Q\d+$/.test(id) || id === selectedId) continue;
     const rel = r.rel || 'broader';
+    if (!PRIORITY.includes(rel)) continue; // only subclasses, instances, parts, facets (and broader, for display)
     const rank = parseInt(r.sl || '0', 10) || 0;
     const cur = best.get(id);
     if (!cur || PRIORITY.indexOf(rel) < PRIORITY.indexOf(cur.rel) || (rel === cur.rel && rank > cur.rank)) {

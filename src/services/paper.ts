@@ -153,7 +153,6 @@ export function buildFront(ctx: PaperCtx): string {
   const truncated = rt ? rt.subject.truncated || rt.title.truncated : searchN >= settings.mx;
   const relPhrase = (r: Record<string, number>) => {
     const names: Record<string, [string, string]> = {
-      'same as': ['equivalent item', 'equivalent items'],
       narrower: ['narrower class', 'narrower classes'],
       instance: ['instance', 'instances'],
       part: ['part', 'parts'],
